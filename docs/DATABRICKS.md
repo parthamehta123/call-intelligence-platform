@@ -222,7 +222,7 @@ asserts the catalog is visible and fails with a clear message otherwise.
 That is also the correct governance posture: the job's identity should not
 hold `CREATE CATALOG`.
 
-**3 · A catalog can exist and still be dead.** `dltparth` resolves fine in
+**3 · A catalog can exist and still be dead.** A catalog resolved fine in
 `SHOW CATALOGS`, but every write fails with `Bucket <name> does not
 exist`. Its storage root was deleted along with the VPC. Probe a catalog
 with a real write before trusting it.

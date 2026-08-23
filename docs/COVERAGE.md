@@ -1,0 +1,106 @@
+# Target architecture → implementation
+
+A box-by-box audit of the reference architecture against what is actually
+in this repo. Every "Built" below was checked against the code, not
+remembered. Anything a reader could reasonably assume works and does not
+is marked plainly.
+
+**Built 24 · Partial 7 · Not built 6**
+
+## Ingestion and preprocessing
+
+| Diagram box | Status | Where |
+|---|---|---|
+| Raw data lake, partitioned | **Partial** — `date=` only; region / call-centre partitioning is described but not implemented | `generate.py`, `pipeline/ingest.py`; a UC volume on Databricks |
+| Transcription (audio → text) | **Not built** — fixtures are text | — |
+| Speaker diarization | **Not built** — speaker labels arrive pre-set | — |
+| Normalization / dedup | **Built** — content-hash dedupe, global shuffle on Spark | `pipeline/preprocess.py`, `spark/dedupe.py` |
+| Language detection | **Not built** | — |
+| PII masking | **Built** — redacted at the boundary, before persistence | `security/dlp.py`, applied in `preprocess.py` |
+
+## Routing, chunking, resolution
+
+| Diagram box | Status | Where |
+|---|---|---|
+| Relevance filter / router | **Built** — discards ~70% before inference; interface is `score → [0,1]` so a classifier drops in | `pipeline/route.py` |
+| Topic / semantic-aware chunking | **Partial** — speaker turns + lexical topic markers + size cap, preserving `call_id`/speaker/timestamps. Not a semantic model | `pipeline/preprocess.py` |
+| Product / entity resolution | **Built** — aliases, SKU, version, family, canonical ID, plus a CRM product hint for calls that never name the product | `catalog.py` |
+
+## Extraction under untrusted input
+
+| Diagram box | Status | Where |
+|---|---|---|
+| Untrusted content marked at source | **Built** — every segment stamped untrusted where it is created | `schemas.py`, `security/taint.py` |
+| Extraction agent, structured output only | **Built** — JSON-schema-constrained, **no tools at all**; offline rules backend and a real Claude backend (`output_config.format`, Batch API at 50% cost) | `pipeline/extract.py` |
+
+## Agent security boundary
+
+| Diagram box | Status | Where |
+|---|---|---|
+| Prompt guard | **Built** — deliberately a *signal*, not the containment | `security/prompt_guard.py` |
+| Tool / exec guard | **Built** — allowlist, argument schemas, destructive-op refusal | `security/policy.py`, `tools.py` |
+| Data / DLP guard | **Built** — PII inbound, secrets blocked outbound | `security/dlp.py` |
+| Taint / provenance tracking | **Built** — propagating labels + one audited declassification gate | `security/taint.py`, `security/declassify.py` |
+| Policy engine | **Built** — RBAC, action, contextual, destination, confidence thresholds; **no LLM in the decision path** | `security/policy.py` |
+| Allow / deny → block, log, alert, human review | **Built** | `security/audit.py`, `review_queue` |
+| Trusted writer, narrow API, no arbitrary shell | **Built** — there is no `shell`, no `execute_sql`, no `write_file` anywhere | `tools.py` |
+| Sandbox / isolation for privileged execution | **Not built** — design guidance only | `docs/SECURITY.md` |
+| Egress control | **Partial** — allowlist + SSRF guard enforced in-process; no proxy or firewall | `security/egress.py` |
+
+## Validation and canonical state
+
+| Diagram box | Status | Where |
+|---|---|---|
+| Schema validation, dedup, aggregation | **Built** — aggregates on *distinct customers*, not mentions | `schemas.py`, `pipeline/aggregate.py` |
+| Conflict detection, confidence scoring | **Built** | `pipeline/reconcile.py` |
+| Customer observation ≠ official truth | **Built** — `observed` vs `confirmed`; chatter never demotes a confirmed row | `kb.py`, `spark/publish.py` |
+| Auto-approve vs supervisor / human review | **Built** — contradictions and spec corrections always route to a human | `pipeline/reconcile.py` |
+| Canonical product state | **Built** — SQLite locally, Delta on Unity Catalog | `kb.py`, `spark/ddl.py` |
+| Knowledge graph | **Not built** — relational only | — |
+| Immutable evidence store | **Built** — append-only, full provenance incl. rejected candidates | `kb.py`, `spark/publish.py` |
+| Change event / CDC | **Built** — dirty flags drive incremental re-embedding | `kb.py`, `retrieval.refresh_index` |
+
+## Retrieval and serving
+
+| Diagram box | Status | Where |
+|---|---|---|
+| RAG indexing over **approved** knowledge only | **Built** — the index is built from validated state, never from transcripts | `retrieval.py` |
+| Embeddings | **Partial** — hashed bag-of-words stand-in; swap `embed()` for a real encoder | `retrieval.py` |
+| Vector index | **Partial** — in-process, not Pinecone/pgvector | `retrieval.py` |
+| Lexical / BM25 index | **Partial** — in-process, not OpenSearch | `retrieval.py` |
+| Query router: structured → SQL, document → RAG | **Built** | `agent.py` |
+| Structured retrieval | **Built** — SQL over canonical state | `agent.py`, `tools.py` |
+| Hybrid retrieval: metadata filter + vector + BM25 + RRF | **Built** | `retrieval.hybrid_search` |
+| Reranker | **Partial** — heuristic overlap + status prior, not a cross-encoder | `retrieval._rerank_entry` |
+| Grounded agent: citations, abstain on weak evidence | **Built** — both routes abstain rather than fill from memory | `agent.py` |
+
+## Observability
+
+| Diagram box | Status | Where |
+|---|---|---|
+| Pipeline metrics | **Built** | `run_metrics` table |
+| Policy decisions | **Built** — every allow/deny queryable | `policy_audit` table, `spark/audit_sink.py` |
+| Security events | **Built** | `security/audit.py` |
+| Lineage / provenance | **Built** | `evidence` table |
+| Prompt / tool traces | **Partial** — tool calls and decisions audited; no prompt-level tracing | `security/audit.py` |
+| Retrieval quality (Recall@K, nDCG, groundedness) | **Not built** — named as what to monitor, never measured | `docs/INTERVIEW.md` |
+
+## The six that are genuinely missing
+
+Ranked by how much they matter to the architecture's claims:
+
+1. **Retrieval quality metrics.** The weakest link. Router precision prices
+   every stage after it, and nothing here measures it. Needs a labelled
+   eval set before any number in this repo can be defended.
+2. **Transcription + diarization.** The input assumption. "The customer
+   said X" vs "the agent said X" changes extraction, and nothing verifies
+   that split today.
+3. **Sandbox isolation.** The security story ends at "the agent holds no
+   dangerous tools". It does not cover the case where privileged execution
+   is genuinely required.
+4. **Real embeddings and a real reranker.** Both are labelled stand-ins,
+   and both flatter the retrieval numbers.
+5. **Knowledge graph.** Relational state answers the current questions;
+   product→feature→issue traversal would need the graph.
+6. **Language detection.** A multilingual call centre would silently feed
+   the extractor text it cannot reason about.
