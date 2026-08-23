@@ -1,0 +1,24 @@
+# Generated data: synthetic lake, SQLite KB, audit log, vector index
+data/
+
+# Build artefacts. The wheel is built by `make wheel` on every deploy, so
+# committing it would only ever ship a stale copy.
+build/
+dist/
+*.egg-info/
+
+# Databricks CLI deployment state (per-target, machine-local)
+.databricks/
+
+# Local Spark scratch
+metastore_db/
+derby.log
+spark-warehouse/
+
+# Isolated Spark venv -- never install pyspark next to databricks-connect,
+# see docs/DATABRICKS.md
+.venv*/
+
+__pycache__/
+*.pyc
+.pytest_cache/

@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "call-intelligence-platform"
+version = "0.1.0"
+description = "10 TB/day customer-call knowledge pipeline with an agent security boundary"
+requires-python = ">=3.10"
+dependencies = []                      # the demo runs on the standard library alone
+
+[project.optional-dependencies]
+claude = ["anthropic>=0.40"]           # only needed for the Claude extraction backend
+dev = ["pytest>=8"]
+# Never install this extra into an environment that has databricks-connect:
+# both ship a `pyspark` package and pip leaves the loser's files orphaned.
+# Databricks Runtime already provides pyspark on the cluster.
+# pyarrow<15 / numpy<2 pair with pyspark 3.5.0; setuptools restores the
+# `distutils` shim that pyspark 3.5.0 still imports and Python 3.12 removed.
+# DBR 14.3 ships a compatible set and needs none of these pins.
+spark = ["pyspark==3.5.0", "pandas", "pyarrow<15", "numpy<2", "setuptools"]
+
+[project.scripts]
+cip = "cip.cli:main"
+cip-spark = "cip.spark.job:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+# Without this the wheel ships no catalog and every product resolves to
+# None on the cluster -- the funnel then discards 100% of traffic and the
+# job "succeeds" having published nothing.
+"cip.resources" = ["*.json"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

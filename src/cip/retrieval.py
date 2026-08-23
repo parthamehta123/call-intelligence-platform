@@ -1,0 +1,225 @@
+"""Hybrid retrieval over validated knowledge.
+
+Two things matter more than the choice of vector store:
+
+1. **Only validated documents are indexed.** The corpus is built from the
+   knowledge base, never from raw transcripts. An injected instruction
+   sitting in a call therefore has no path into an answer -- it was never
+   indexed in the first place.
+
+2. **Lexical retrieval is not optional.** "Does XG-482 firmware 7.2.13
+   have the route-loss bug?" turns on exact identifiers, and dense vectors
+   place `7.2.13` and `7.2.1` at almost the same point. BM25 finds the
+   token; embeddings find the paraphrase; RRF fuses the two rankings and a
+   reranker orders the survivors.
+
+The embedding here is a hashed bag-of-words, chosen so the demo runs with
+no dependencies. Swap `embed()` for a real embedding model and nothing
+else in this module changes.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+import re
+from collections import Counter
+from dataclasses import dataclass
+from pathlib import Path
+
+from . import kb
+from .config import CONFIG, DATA
+
+INDEX_PATH = DATA / "index.json"
+DIM = 256
+
+_TOKEN = re.compile(r"[a-z0-9][a-z0-9\.\-_]*")
+_STOP = {"the", "a", "an", "is", "are", "of", "and", "to", "in", "for", "on", "with",
+         "it", "this", "that", "was", "were", "be", "by", "from", "as", "at", "or"}
+
+
+def tokenize(text: str) -> list[str]:
+    return [t for t in _TOKEN.findall(text.lower()) if t not in _STOP and len(t) > 1]
+
+
+def _slot(token: str) -> int:
+    # Never `hash()`: Python salts string hashing per process, so a vector
+    # written today would land in different slots tomorrow and the index
+    # would rot silently rather than fail loudly.
+    return int.from_bytes(hashlib.blake2b(token.encode(), digest_size=4).digest(), "big") % DIM
+
+
+def embed(text: str) -> list[float]:
+    """Hashed bag-of-words, L2-normalised. Placeholder for a real encoder."""
+    vector = [0.0] * DIM
+    for token, count in Counter(tokenize(text)).items():
+        slot = _slot(token)
+        vector[slot] += 1.0 + math.log(count)
+    norm = math.sqrt(sum(v * v for v in vector)) or 1.0
+    return [v / norm for v in vector]
+
+
+def cosine(a: list[float], b: list[float]) -> float:
+    return sum(x * y for x, y in zip(a, b))
+
+
+@dataclass
+class Doc:
+    doc_id: str
+    product_id: str | None
+    title: str
+    body: str
+    source: str
+    status: str
+    tokens: list[str]
+    vector: list[float]
+
+
+class Index:
+    """BM25 statistics + vectors, persisted as JSON."""
+
+    def __init__(self) -> None:
+        self.docs: dict[str, Doc] = {}
+        self.df: Counter[str] = Counter()
+        self.avg_len: float = 1.0
+
+    # -- incremental maintenance (CDC) ------------------------------------
+    def upsert(self, rows: list[dict]) -> list[str]:
+        """Re-embed only what changed. Re-indexing 10 TB nightly is the
+        mistake that makes these systems unaffordable; the KB flags the
+        handful of documents that actually moved."""
+        for row in rows:
+            text = f"{row['title']}\n{row['body']}"
+            if row["doc_id"] in self.docs:
+                self._remove_stats(self.docs[row["doc_id"]])
+            doc = Doc(
+                doc_id=row["doc_id"], product_id=row["product_id"], title=row["title"],
+                body=row["body"], source=row["source"], status=row["status"],
+                tokens=tokenize(text), vector=embed(text),
+            )
+            self.docs[doc.doc_id] = doc
+            self.df.update(set(doc.tokens))
+        self._recompute_avg()
+        return [row["doc_id"] for row in rows]
+
+    def _remove_stats(self, doc: Doc) -> None:
+        for token in set(doc.tokens):
+            self.df[token] -= 1
+            if self.df[token] <= 0:
+                del self.df[token]
+
+    def _recompute_avg(self) -> None:
+        if self.docs:
+            self.avg_len = sum(len(d.tokens) for d in self.docs.values()) / len(self.docs)
+
+    # -- scoring -----------------------------------------------------------
+    def bm25(self, query: str, k1: float = 1.5, b: float = 0.75) -> list[tuple[str, float]]:
+        n_docs = len(self.docs) or 1
+        query_tokens = tokenize(query)
+        scores: dict[str, float] = {}
+        for doc in self.docs.values():
+            counts = Counter(doc.tokens)
+            length = len(doc.tokens) or 1
+            score = 0.0
+            for token in query_tokens:
+                freq = counts.get(token, 0)
+                if not freq:
+                    continue
+                idf = math.log(1 + (n_docs - self.df.get(token, 0) + 0.5) /
+                               (self.df.get(token, 0) + 0.5))
+                score += idf * (freq * (k1 + 1)) / (
+                    freq + k1 * (1 - b + b * length / self.avg_len))
+            if score:
+                scores[doc.doc_id] = score
+        return sorted(scores.items(), key=lambda kv: -kv[1])
+
+    def dense(self, query: str) -> list[tuple[str, float]]:
+        query_vector = embed(query)
+        scored = [(doc_id, cosine(query_vector, doc.vector))
+                  for doc_id, doc in self.docs.items()]
+        return sorted([s for s in scored if s[1] > 0], key=lambda kv: -kv[1])
+
+    # -- persistence -------------------------------------------------------
+    def save(self, path: Path = INDEX_PATH) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "docs": {k: v.__dict__ for k, v in self.docs.items()},
+            "df": dict(self.df),
+            "avg_len": self.avg_len,
+        }))
+
+    @staticmethod
+    def load(path: Path = INDEX_PATH) -> "Index":
+        index = Index()
+        if not path.exists():
+            return index
+        raw = json.loads(path.read_text())
+        index.docs = {k: Doc(**v) for k, v in raw["docs"].items()}
+        index.df = Counter(raw["df"])
+        index.avg_len = raw["avg_len"]
+        return index
+
+
+def refresh_index() -> int:
+    """Pull CDC-flagged documents out of the KB and re-embed just those."""
+    index = Index.load()
+    dirty = kb.dirty_documents()
+    updated = index.upsert(dirty)
+    index.save()
+    kb.mark_clean(updated)
+    return len(updated)
+
+
+def _extract_filters(query: str) -> dict[str, str]:
+    """Metadata pre-filtering. A product named in the question shrinks the
+    candidate set before any scoring happens."""
+    from .catalog import resolve_product
+    product_id, confidence = resolve_product(query)
+    return {"product_id": product_id} if product_id and confidence >= 0.85 else {}
+
+
+def hybrid_search(query: str, top_k: int | None = None) -> list[dict]:
+    top_k = top_k or CONFIG.top_k
+    index = Index.load()
+    if not index.docs:
+        return []
+
+    filters = _extract_filters(query)
+    allowed = {
+        doc_id for doc_id, doc in index.docs.items()
+        if not filters or doc.product_id == filters["product_id"]
+    }
+
+    lexical = [(d, s) for d, s in index.bm25(query) if d in allowed][:20]
+    dense = [(d, s) for d, s in index.dense(query) if d in allowed][:20]
+
+    # Reciprocal rank fusion: rank-based, so the two score scales never
+    # need calibrating against each other.
+    fused: dict[str, float] = {}
+    for ranking in (lexical, dense):
+        for rank, (doc_id, _) in enumerate(ranking):
+            fused[doc_id] = fused.get(doc_id, 0.0) + 1.0 / (CONFIG.rrf_k + rank + 1)
+
+    ranked = sorted(fused.items(), key=lambda kv: -kv[1])[: top_k * 3]
+    results = [_rerank_entry(index.docs[doc_id], query, score) for doc_id, score in ranked]
+    results.sort(key=lambda r: -r["score"])
+    return results[:top_k]
+
+
+def _rerank_entry(doc: Doc, query: str, fused_score: float) -> dict:
+    """Cheap stand-in for a cross-encoder: exact-token overlap plus a
+    freshness/status prior. Confirmed engineering facts outrank raw
+    customer observations when both match."""
+    query_tokens = set(tokenize(query))
+    overlap = len(query_tokens & set(doc.tokens)) / (len(query_tokens) or 1)
+    status_prior = {"confirmed": 0.15, "published": 0.10, "observed": 0.05}.get(doc.status, 0.0)
+    return {
+        "doc_id": doc.doc_id,
+        "product_id": doc.product_id,
+        "title": doc.title,
+        "body": doc.body,
+        "source": doc.source,
+        "status": doc.status,
+        "score": round(fused_score * 10 + overlap + status_prior, 4),
+    }

@@ -1,0 +1,265 @@
+# Running this on Databricks
+
+## What "the 10 TB claim is architectural" actually meant
+
+The README says the throughput number was never benchmarked. Precisely:
+
+* **What was true:** the pipeline stages are pure `Iterable -> Iterator`
+  functions with no cross-record state, so they satisfy the contract Spark
+  needs to run them one partition at a time.
+* **What was *not* true:** that the whole pipeline lifted onto a cluster
+  unchanged. Two stages held state over the entire day and genuinely had
+  to be rewritten.
+
+Here is the honest per-stage account, now that the port exists and runs.
+
+| Stage | Ported how | Free? |
+|---|---|---|
+| 2 · preprocess (redact, segment) | `mapInPandas(preprocess_batches)` — same function body | **yes** |
+| 3 · route (funnel) | fused into the extract pass | **yes** |
+| 4 · extract | `mapInPandas(route_and_extract_batches)` — same `cip.pipeline.extract` | **yes** |
+| dedupe | **rewritten** — was an in-process `set`, now a shuffle | no |
+| 5 · aggregate | **rewritten** — was a `defaultdict` over the whole day, now `groupBy/agg` | no |
+| 6 · reconcile | unchanged, runs on the driver over ~12 rows | yes |
+| 7 · declassify + 8 · publish | unchanged gate, storage swapped to Delta `MERGE` | yes |
+
+The two rewrites are the honest part. A `set` lifted into `mapPartitions`
+deduplicates *within a partition only* and silently misses the duplicates
+that matter. A `defaultdict` over every observation is a driver-side
+collect that is fine at 4,000 calls and fatal at 10 TB.
+
+Because there are now two implementations of aggregation,
+`tests/test_spark.py` pins them together — same input, identical
+candidates and identical reconcile decisions. Two implementations without
+that test would be a liability, not a feature.
+
+### Also not free (found by actually running it)
+
+* **`mapPartitions` is unavailable on Spark Connect.** `databricks-connect`
+  13+ and serverless speak Connect, where `df.rdd` does not exist. Every
+  stage uses `mapInPandas`, which has the same contract and works on
+  classic, Connect and serverless alike.
+* **pandas turns SQL `NULL` into float `NaN`.** A null `product_hint`
+  arrived as `nan`, flowed through entity resolution as the product id and
+  failed schema validation with *expected string, got float*. Every
+  nullable column crossing the Arrow boundary goes through `_null()`.
+* **Lazy re-evaluation after a write.** `deduped.count()` was computed
+  *after* `record_seen` inserted this run's hashes, so the anti-join
+  re-ran against the rows it had just written and reported `0`. The
+  DataFrame is now cached and counted before the write.
+* **Executors do not inherit the driver's `sys.path`.** Without the wheel
+  attached as a job library the driver looks healthy and every task dies
+  with `ModuleNotFoundError: cip`.
+* **`catalog.json` lived outside the package.** In a wheel on a cluster
+  there is no repo checkout, so the file did not exist, every product
+  resolved to `None`, the funnel discarded 100% of traffic and the job
+  "succeeded" having published nothing. It is now packaged, with the repo
+  copy still winning locally.
+
+## Do not install `pyspark` next to `databricks-connect`
+
+Both ship a top-level `pyspark` package. Installing one over the other
+leaves the loser's files orphaned in `site-packages`, and the result is an
+import error deep inside `pyspark.sql.functions` that looks like a Spark
+bug. Symptom:
+
+```
+ImportError: cannot import name 'AnalyzeArgument' from 'pyspark.sql.udtf'
+```
+
+Repair:
+
+```bash
+python3 -m pip uninstall -y pyspark
+rm -rf "$(python3 -c 'import site;print(site.getsitepackages()[0])')/pyspark"
+python3 -m pip install --force-reinstall --no-deps databricks-connect==14.3.13
+```
+
+So: the cluster and `databricks-connect` provide Spark; the `spark` extra
+in `pyproject.toml` exists only for a **separate** local venv used to run
+the parity tests.
+
+```bash
+python3 -m venv .venv-spark
+.venv-spark/bin/pip install -e '.[spark,dev]'
+.venv-spark/bin/python -m pytest tests/test_spark.py -q
+```
+
+`tests/test_spark.py` detects `databricks-connect` and skips rather than
+hanging, so `make test` stays green in the normal environment.
+
+## One-time workspace setup
+
+```bash
+databricks auth login --host https://<workspace>.cloud.databricks.com
+```
+
+Unity Catalog objects the job expects. **An admin creates the catalog in
+the UI** — on Default Storage accounts `CREATE CATALOG` from SQL fails
+without an explicit `MANAGED LOCATION`, and the job deliberately does not
+hold that permission:
+
+```sql
+GRANT USE CATALOG ON CATALOG <catalog> TO `<service-principal>`;
+GRANT CREATE SCHEMA ON CATALOG <catalog> TO `<service-principal>`;
+```
+
+Before pointing the bundle at a catalog, prove it can actually be written
+to — a catalog whose storage root has been deleted still lists fine:
+
+```sql
+CREATE TABLE IF NOT EXISTS <catalog>.<schema>._probe (x INT);
+DROP TABLE <catalog>.<schema>._probe;
+```
+
+The production service principal should hold exactly:
+
+| Object | Grant | Why |
+|---|---|---|
+| `cip.call_intelligence.issues` | `MODIFY` | the only table the writer updates |
+| `cip.call_intelligence.evidence` | `MODIFY` | append-only provenance |
+| `cip.call_intelligence.review_queue` | `MODIFY` | human queue |
+| `cip.call_intelligence.policy_audit` | `MODIFY` | decision log |
+| the raw volume | `READ VOLUME` | never write |
+| everything else | — | nothing |
+
+This is where the RBAC layer physically lives. The policy engine sits on
+top of it; it does not replace it.
+
+## Deploy
+
+```bash
+make bundle-validate        # databricks bundle validate -t dev
+make bundle-deploy          # builds the wheel, uploads, creates the job
+make bundle-run             # runs it once, streaming output
+```
+
+### Production
+
+`prod` deliberately refuses to inherit anything from whoever runs the CLI.
+Both of the following are required, and both exist for the same reason:
+
+```bash
+databricks bundle deploy -t prod \
+  --var="run_as_service_principal=<application-id>"
+```
+
+* **`run_as`** takes a service principal *application ID* (a UUID) — not an
+  email, not a display name. A job owned by a person dies the day that
+  person leaves. The default is the invalid sentinel
+  `SET-ME-service-principal-application-id`, which appears verbatim in the
+  failure so it points back at the config. A variable with *no* default is
+  not an option: Asset Bundles resolve every declared variable for every
+  target, so it would break `validate` on dev too.
+
+* **`workspace.root_path`** is pinned to that service principal's home.
+  Left unset, the path derives from the deploying user and two engineers
+  produce two independent copies of the same job. The obvious alternative,
+  `/Workspace/Shared`, is worse than untidy — the CLI flags it, and
+  correctly: it is writable by every workspace user, so anyone could rewrite
+  the notebooks and the wheel that the service principal then executes.
+  That is a supply-chain hole running straight through the security
+  boundary this project is built on.
+
+Grant that service principal exactly the objects listed above and nothing
+else. **This has not been verified end to end** — the workspace used for
+development has no service principals, and creating an identity is not
+something this repo should do on an operator's behalf. `validate -t prod`
+resolves cleanly up to the point of needing a real principal's home
+directory.
+
+`databricks.yml` builds the wheel from this repo and attaches it to every
+task, which is what makes `import cip` work inside the Python workers.
+
+The `dev` target is `mode: development`: resources are prefixed with your
+username, the schedule is paused, and nothing collides with `prod`.
+
+## Wiring up real Claude extraction
+
+The default `rules` extractor runs offline and deterministically. For the
+real path, store the key in a secret scope — never in the bundle:
+
+```bash
+databricks secrets create-scope cip
+databricks secrets put-secret cip anthropic_api_key
+```
+
+Then in the cluster spec:
+
+```yaml
+spark_env_vars:
+  CIP_EXTRACTOR: claude
+  ANTHROPIC_API_KEY: "{{secrets/cip/anthropic_api_key}}"
+```
+
+Extraction uses `claude-opus-5` with `output_config.format` (JSON schema).
+For the nightly sweep prefer `extract_claude_batch()` — the Batch API at
+50% cost, results keyed by `custom_id`.
+
+## What the real deployment changed
+
+The job now runs green on Databricks serverless. Every number matches the
+single-node run exactly:
+
+```
+calls 4000 · segments_landed 3997 · observations 1138 · evidence_rows 1138
+candidates 12 · published 6 · queued_for_review 2 · rejected 4
+audit_rows 22 · security_checks 10/10 blocked
+```
+
+Seven things broke between "runs on local Spark" and "runs on Databricks".
+None were visible locally, which is the whole point of recording them.
+
+**1 · Classic compute is unusable in this workspace.** Every job cluster
+dies with `InvalidSubnetID.NotFound: subnet-<id> does not exist` — the
+customer-managed VPC was torn down under the workspace. The job runs on
+**serverless**, which uses Databricks' own network.
+
+**2 · `CREATE CATALOG` is rejected on Default Storage accounts.**
+`Metastore storage root URL does not exist` — a catalog needs an explicit
+`MANAGED LOCATION`. The setup notebook no longer creates catalogs; it
+asserts the catalog is visible and fails with a clear message otherwise.
+That is also the correct governance posture: the job's identity should not
+hold `CREATE CATALOG`.
+
+**3 · A catalog can exist and still be dead.** `dltparth` resolves fine in
+`SHOW CATALOGS`, but every write fails with `Bucket <name> does not
+exist`. Its storage root was deleted along with the VPC. Probe a catalog
+with a real write before trusting it.
+
+**4 · `.cache()` is rejected on serverless** (`NOT_SUPPORTED_WITH_SERVERLESS:
+PERSIST TABLE`). Dropping it naively would have re-run *extraction* three
+times, once per downstream action. Each stage is now materialised as a
+Delta table — bronze (raw volume) → silver (`segments`) → `observations` →
+gold (`issues`, `evidence`). That is the medallion shape anyway, and it
+buys replay: a bad extractor re-runs from silver without re-reading raw.
+
+**5 · No filesystem work at import.** `audit = AuditLog()` ran a `mkdir` at
+module import. Imported inside a UDF on an executor, that hit
+`OSError: [Errno 30] Read-only file system` and failed the stage. The log
+is now lazy, and a failed write is counted rather than fatal.
+
+**6 · Positional argument drift.** `publish_candidates` grew a `day`
+parameter; the caller still passed four positional args, so `config` bound
+to `day` and Delta got
+`replaceWhere: day = 'SparkConfig(catalog=...)'`. All cross-module calls
+are keyword-only now.
+
+**7 · A join reorders columns, and `insertInto` matches by position.**
+`dedupe_across_days` joins on `(customer_id, content_hash)`; Spark hoists
+join keys to the front. The write then shifted every column by two and
+surfaced as a nonsense type error — *cannot cast `speaker_mix` STRING to
+MAP*. `write_day_partition` now selects by the target table's column order.
+`tests/test_spark.py` pins it.
+
+Numbers 4–7 are code defects that local Parquet runs could not surface:
+the Delta-only branch was never exercised, and the local warehouse had no
+read-only filesystem.
+
+## Sizing note
+
+Still not run at 10 TB. What is now established: the logic is identical
+between engines (parity tests), and the job completes end to end on real
+Databricks serverless against Unity Catalog. Real sizing needs a measured
+run — watch router precision first, since it prices every stage after it,
+then extract-stage tokens per segment.

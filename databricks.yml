@@ -1,0 +1,175 @@
+# Databricks Asset Bundle.
+#   databricks bundle validate -t dev
+#   databricks bundle deploy   -t dev
+#   databricks bundle run daily_call_intelligence -t dev
+#
+# The wheel is built from this repo and attached as a job library, which is
+# what makes `import cip` work inside the Python workers. Without it the job
+# fails with ModuleNotFoundError on the executors while the driver looks fine.
+
+bundle:
+  name: call-intelligence-platform
+
+variables:
+  catalog:
+    description: Unity Catalog catalog holding the knowledge base.
+    default: cip
+  schema:
+    description: Schema inside that catalog.
+    default: call_intelligence
+  volume:
+    description: UC volume where raw call files land.
+    default: raw_calls
+  notification_email:
+    description: Address that receives on-failure notifications.
+    default: parthamehta10@gmail.com
+  run_as_service_principal:
+    description: >-
+      Application ID (a UUID) of the service principal that owns production
+      runs -- NOT an email address and NOT a display name.
+      Override it on every prod deploy:
+        databricks bundle deploy -t prod \
+          --var="run_as_service_principal=<application-id>"
+      The default is an intentionally invalid sentinel rather than a real
+      identity. Databricks Asset Bundles resolve every declared variable for
+      every target, so a variable with no default fails `validate` on dev as
+      well as prod -- and an empty default would reach the workspace as a
+      blank owner and fail with an error naming nothing. The sentinel shows
+      up verbatim in the failure, which points straight back here.
+    default: SET-ME-service-principal-application-id
+
+artifacts:
+  cip_wheel:
+    type: whl
+    path: .
+    build: python3 -m build --wheel
+
+resources:
+  jobs:
+    daily_call_intelligence:
+      name: "[${bundle.target}] daily call intelligence"
+      # Yesterday's calls, processed once a day. One run at a time: the
+      # pipeline is idempotent per day but two concurrent runs would race
+      # on the same MERGE target.
+      max_concurrent_runs: 1
+      schedule:
+        quartz_cron_expression: "0 0 3 * * ?"
+        timezone_id: "UTC"
+        pause_status: PAUSED
+      email_notifications:
+        on_failure:
+          - ${var.notification_email}
+      # Serverless compute. This workspace's customer-managed VPC references a
+      # deleted subnet, so every classic cluster fails with
+      # InvalidSubnetID.NotFound -- serverless runs in Databricks' own network
+      # and sidesteps it. It is also why the stages use `mapInPandas` rather
+      # than `mapPartitions`: serverless speaks Spark Connect, which has no
+      # RDD API.
+      environments:
+        - environment_key: cip_env
+          spec:
+            client: "2"
+            dependencies:
+              - ./dist/*.whl
+
+      tasks:
+        - task_key: setup
+          environment_key: cip_env
+          notebook_task:
+            notebook_path: ./databricks/notebooks/01_setup.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+              volume: ${var.volume}
+
+        - task_key: daily_pipeline
+          depends_on:
+            - task_key: setup
+          environment_key: cip_env
+          max_retries: 2
+          min_retry_interval_millis: 60000
+          notebook_task:
+            notebook_path: ./databricks/notebooks/03_daily_pipeline.py
+            base_parameters:
+              # Empty means "yesterday", computed on the cluster in UTC.
+              day: ""
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+              volume: ${var.volume}
+
+        - task_key: security_checks
+          depends_on:
+            - task_key: daily_pipeline
+          environment_key: cip_env
+          notebook_task:
+            notebook_path: ./databricks/notebooks/05_security_redteam.py
+
+targets:
+  dev:
+    mode: development
+    default: true
+    variables:
+      # The workspace catalog. Not `cip_dev` (does not exist, and CREATE
+      # CATALOG is rejected on Default Storage without a MANAGED LOCATION),
+      # and not the developer catalog, whose S3 storage root was deleted --
+      # every write there fails with RESOURCE_DOES_NOT_EXIST.
+      catalog: full_workspace
+    resources:
+      jobs:
+        daily_call_intelligence:
+          tasks:
+            # Dev only: land a synthetic day so the pipeline has input.
+            # Production reads real calls and has no such task.
+            - task_key: seed_demo_data
+              depends_on:
+                - task_key: setup
+              environment_key: cip_env
+              notebook_task:
+                notebook_path: ./databricks/notebooks/02_land_synthetic_calls.py
+                base_parameters:
+                  catalog: ${var.catalog}
+                  schema: ${var.schema}
+                  volume: ${var.volume}
+                  day: "2026-08-22"
+                  calls: "4000"
+            - task_key: daily_pipeline
+              depends_on:
+                - task_key: seed_demo_data
+              notebook_task:
+                notebook_path: ./databricks/notebooks/03_daily_pipeline.py
+                base_parameters:
+                  day: "2026-08-22"
+                  catalog: ${var.catalog}
+                  schema: ${var.schema}
+                  volume: ${var.volume}
+
+  prod:
+    mode: production
+    workspace:
+      # Pinned to the service principal's own home, for two reasons.
+      #
+      # Stability: without an explicit root_path the deployment path is
+      # derived from whoever ran the CLI, so two engineers deploying prod
+      # produce two independent copies of the same job.
+      #
+      # Least privilege: /Workspace/Shared is writable by every workspace
+      # user. Deploying there would let any user rewrite the notebooks and
+      # the wheel that the service principal subsequently executes -- a
+      # supply-chain hole straight through the security boundary this
+      # project is built around. The SP's home is restricted to the SP and
+      # workspace admins, and is not tied to any individual human.
+      root_path: /Workspace/Users/${var.run_as_service_principal}/.bundle/${bundle.name}/${bundle.target}
+    variables:
+      catalog: cip
+    run_as:
+      # The writer identity. Grant it exactly the tables listed in
+      # docs/DATABRICKS.md and nothing else -- this is where the RBAC layer
+      # physically lives in production, and it is the layer the policy engine
+      # sits on top of.
+      #
+      # `service_principal_name` takes a service principal APPLICATION ID.
+      # An email address here is not merely wrong, it is quietly wrong: the
+      # field accepts the string and the deploy fails later against the
+      # workspace. A job owned by a person also breaks the day that person
+      # leaves, which is the usual way a nightly pipeline dies.
+      service_principal_name: ${var.run_as_service_principal}
