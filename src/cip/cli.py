@@ -81,6 +81,24 @@ def _cmd_redteam(args) -> int:
     return 0 if blocked == len(results) else 1
 
 
+def _cmd_eval_router(args) -> int:
+    """Measure the funnel. Everything downstream is priced off this."""
+    from .eval.dataset import load_generated, load_hard_cases
+    from .eval.router_eval import report
+
+    threshold = args.threshold if args.threshold is not None else CONFIG.relevance_threshold
+
+    if args.set in ("hard", "both"):
+        print(report(load_hard_cases(),
+                     "HARD CASES - hand-written, tests generalisation", threshold))
+        print()
+    if args.set in ("generated", "both"):
+        print(report(load_generated(day=args.day),
+                     "GENERATED - labels exact, but shares an author with the router",
+                     threshold))
+    return 0
+
+
 def _cmd_audit(args) -> int:
     from .security.audit import audit
     for record in audit.tail(args.limit, event=args.event):
@@ -161,6 +179,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--limit", type=int, default=20)
     p.add_argument("--event", default=None)
     p.set_defaults(func=_cmd_audit)
+
+    p = sub.add_parser("eval-router", help="measure the relevance funnel")
+    p.add_argument("--set", choices=["hard", "generated", "both"], default="both")
+    p.add_argument("--threshold", type=float, default=None)
+    p.add_argument("--day", **day)
+    p.set_defaults(func=_cmd_eval_router)
 
     p = sub.add_parser("demo", help="end-to-end walkthrough")
     p.add_argument("--calls", type=int, default=4000)

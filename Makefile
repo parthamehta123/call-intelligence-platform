@@ -1,4 +1,4 @@
-.PHONY: demo run generate status redteam test ask clean wheel \
+.PHONY: demo run generate status redteam test ask clean wheel eval-router \
 	spark-setup spark-test spark-run bundle-validate bundle-deploy bundle-run
 
 PY          := PYTHONPATH=src python3
@@ -27,6 +27,9 @@ test:
 
 ask:
 	$(PY) -m cip ask "$(Q)"
+
+eval-router:    ## measure the funnel: precision/recall/threshold sweep
+	$(PY) -m cip eval-router
 
 # ---- spark / databricks ----------------------------------------------------
 # Deliberately an isolated venv: installing plain pyspark next to

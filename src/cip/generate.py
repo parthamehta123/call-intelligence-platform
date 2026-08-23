@@ -98,6 +98,7 @@ def generate(n_calls: int = 4000, day: str = "2026-08-22", seed: int = 7) -> Pat
         i: (day_dir / f"part-{i:05d}.jsonl").open("w")
         for i in range(cfg.partitions)
     }
+    labels = (day_dir / "_LABELS.jsonl").open("w")
     counts = {"total": 0, "with_signal": 0, "with_attack": 0, "with_pii": 0, "with_conflict": 0}
 
     try:
@@ -107,6 +108,10 @@ def generate(n_calls: int = 4000, day: str = "2026-08-22", seed: int = 7) -> Pat
             ts = (base + timedelta(seconds=rng.randint(0, 86399))).isoformat()
             turns: list[dict] = []
             product_hint: str | None = None
+            signal_text: str | None = None
+            signal_product: str | None = None
+            signal_issue: str | None = None
+            attack_text: str | None = None
 
             def add(speaker: str, text: str) -> None:
                 turns.append({
@@ -128,6 +133,7 @@ def generate(n_calls: int = 4000, day: str = "2026-08-22", seed: int = 7) -> Pat
                     sig = rng.choice(SIGNALS)
                 # The case record knows the SKU even when the caller never says it.
                 product_hint = sig[0] if rng.random() < 0.85 else None
+                signal_text, signal_product, signal_issue = sig[2], sig[0], sig[3]
                 add("customer", sig[2])
                 add("agent", "I'm sorry about that, let me note the details.")
                 if rng.random() < 0.35:
@@ -135,7 +141,8 @@ def generate(n_calls: int = 4000, day: str = "2026-08-22", seed: int = 7) -> Pat
 
             if rng.random() < 0.02:
                 counts["with_attack"] += 1
-                add("customer", rng.choice(ATTACKS))
+                attack_text = rng.choice(ATTACKS)
+                add("customer", attack_text)
 
             if rng.random() < 0.05:
                 counts["with_pii"] += 1
@@ -153,10 +160,21 @@ def generate(n_calls: int = 4000, day: str = "2026-08-22", seed: int = 7) -> Pat
                 "turns": turns,
             }
             handles[i % cfg.partitions].write(json.dumps(record) + "\n")
+            # Ground truth lives in a sidecar, never in the call record. If it
+            # travelled with the data the router could read its own answer, and
+            # the eval would measure nothing.
+            labels.write(json.dumps({
+                "call_id": call_id,
+                "signal_text": signal_text,
+                "product_id": signal_product,
+                "issue_key": signal_issue,
+                "attack_text": attack_text,
+            }) + "\n")
             counts["total"] += 1
     finally:
         for handle in handles.values():
             handle.close()
+        labels.close()
 
     manifest = {
         "date": day,

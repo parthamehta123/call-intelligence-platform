@@ -5,7 +5,7 @@ in this repo. Every "Built" below was checked against the code, not
 remembered. Anything a reader could reasonably assume works and does not
 is marked plainly.
 
-**Built 24 · Partial 7 · Not built 6**
+**Built 25 · Partial 7 · Not built 6**
 
 ## Ingestion and preprocessing
 
@@ -83,15 +83,19 @@ is marked plainly.
 | Security events | **Built** | `security/audit.py` |
 | Lineage / provenance | **Built** | `evidence` table |
 | Prompt / tool traces | **Partial** — tool calls and decisions audited; no prompt-level tracing | `security/audit.py` |
+| Router quality (precision / recall / threshold sweep) | **Built** — measured on two labelled sets, with a CI regression gate | `src/cip/eval/`, `docs/EVAL.md` |
 | Retrieval quality (Recall@K, nDCG, groundedness) | **Not built** — named as what to monitor, never measured | `docs/INTERVIEW.md` |
 
 ## The six that are genuinely missing
 
 Ranked by how much they matter to the architecture's claims:
 
-1. **Retrieval quality metrics.** The weakest link. Router precision prices
-   every stage after it, and nothing here measures it. Needs a labelled
-   eval set before any number in this repo can be defended.
+1. **Retrieval quality metrics.** The *router* is now measured
+   (`docs/EVAL.md`): precision 0.976 / recall 0.9499 on 4,000 generated
+   segments, 0.733 / 0.917 on 32 hand-written hard cases, with a CI floor.
+   Retrieval quality — Recall@K, nDCG, groundedness, citation correctness
+   — is still unmeasured, and 32 hand-labelled cases is a smoke test
+   rather than a benchmark.
 2. **Transcription + diarization.** The input assumption. "The customer
    said X" vs "the agent said X" changes extraction, and nothing verifies
    that split today.
