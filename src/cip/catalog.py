@@ -46,6 +46,49 @@ def load_catalog() -> list[dict]:
     return json.loads(_catalog_path().read_text())["products"]
 
 
+# Confidence for a generic category noun ("router", "console"). Deliberately
+# well below the routing threshold's reach on its own: 0.45 * 0.60 = 0.27,
+# so a generic term alone never admits a segment. It only carries one
+# through in combination with actual problem language, which is the correct
+# reading of the evidence -- "my home router from another vendor" mentions a
+# router and reports nothing about ours.
+GENERIC_CONFIDENCE = 0.60
+
+
+# A version string is often the only product identifier a caller gives:
+# "after installing firmware 7.2 the VPN keeps dropping" names no product at
+# all. Same ambiguity rule as generic terms -- usable only while exactly one
+# product ships that version. Confidence sits above a generic noun (a version
+# is a much sharper signal) but below a curated alias.
+VERSION_CONFIDENCE = 0.70
+
+
+@lru_cache(maxsize=1)
+def _version_index() -> dict[str, str]:
+    """Version string -> product, keeping only versions unique catalog-wide."""
+    owners: dict[str, list[str]] = {}
+    for product in load_catalog():
+        for version in product["versions"]:
+            owners.setdefault(version, []).append(product["product_id"])
+    return {v: pids[0] for v, pids in owners.items() if len(pids) == 1}
+
+
+@lru_cache(maxsize=1)
+def _generic_index() -> dict[str, str]:
+    """Generic term -> product, keeping only terms unique across the catalog.
+
+    A category noun is usable evidence exactly when the catalog contains one
+    product of that category. Ship a second router and `router` stops being
+    evidence -- this drops it automatically rather than silently resolving
+    to whichever product was listed first.
+    """
+    owners: dict[str, list[str]] = {}
+    for product in load_catalog():
+        for term in product.get("generic_aliases", []):
+            owners.setdefault(_norm(term), []).append(product["product_id"])
+    return {term: pids[0] for term, pids in owners.items() if len(pids) == 1}
+
+
 def _norm(text: str) -> str:
     return re.sub(r"[^a-z0-9 ]+", " ", text.lower())
 
@@ -66,7 +109,18 @@ def resolve_product(text: str) -> tuple[str | None, float]:
             if f" {_norm(alias)} " in padded:
                 if 0.90 > best[1]:
                     best = (pid, 0.90)
-        # 3. fuzzy fallback -> flagged as low confidence, never auto-accepted
+        # 3. generic category noun -> weak evidence, unambiguous terms only
+        for term, owner in _generic_index().items():
+            if owner == pid and f" {term} " in padded and GENERIC_CONFIDENCE > best[1]:
+                best = (pid, GENERIC_CONFIDENCE)
+
+        # 4. unambiguous version string -> identifies the product on its own
+        for match in _VERSION_RE.finditer(text):
+            owner = _version_index().get(match.group(1))
+            if owner == pid and VERSION_CONFIDENCE > best[1]:
+                best = (pid, VERSION_CONFIDENCE)
+
+        # 5. fuzzy fallback -> flagged as low confidence, never auto-accepted
         ratio = max(
             SequenceMatcher(None, _norm(alias), norm[:60]).ratio()
             for alias in product["aliases"]

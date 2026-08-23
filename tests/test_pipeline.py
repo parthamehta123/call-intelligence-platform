@@ -98,3 +98,38 @@ def test_spec_corrections_always_require_sign_off():
     observations = [_obs(f"U{i}", type="spec_correction", issue_key="SFP_PORT_COUNT")
                     for i in range(500)]
     assert reconcile(aggregate(observations))[0].decision == "review"
+
+
+def test_review_queue_does_not_duplicate_across_runs(tmp_path, monkeypatch):
+    """Re-running a day must refresh the queue item, not append a copy.
+
+    With created_at in the primary key, three runs left three identical open
+    items -- a queue that grows with run count rather than with distinct
+    problems.
+    """
+    from cip import kb
+    from cip.config import CONFIG
+    from cip.schemas import IssueCandidate
+
+    monkeypatch.setattr(CONFIG, "kb_path", tmp_path / "kb.sqlite")
+    kb.init(CONFIG.kb_path)
+
+    candidate = IssueCandidate(
+        product_id="X100", issue_key="VPN_DISCONNECT", type="bug_report",
+        summary="VPN disconnects", severity="high", mentions=50,
+        distinct_customers=40, regions=["US"], versions=["7.2"],
+        first_seen="2026-08-22T00:00:00+00:00", last_seen="2026-08-22T23:00:00+00:00",
+        mean_confidence=0.9, evidence_ids=[], decision="review",
+        decision_reason="contradictory reports")
+
+    kb.enqueue_review(candidate)
+    first = kb.query("SELECT created_at FROM review_queue")[0]["created_at"]
+
+    candidate.decision_reason = "contradictory reports (updated)"
+    kb.enqueue_review(candidate)
+    kb.enqueue_review(candidate)
+
+    rows = kb.query("SELECT product_id, issue_key, reason, created_at FROM review_queue")
+    assert len(rows) == 1
+    assert rows[0]["reason"].endswith("(updated)"), "evidence should refresh"
+    assert rows[0]["created_at"] == first, "queue age must survive a re-run"

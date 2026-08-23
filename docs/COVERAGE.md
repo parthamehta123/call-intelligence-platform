@@ -91,8 +91,9 @@ is marked plainly.
 Ranked by how much they matter to the architecture's claims:
 
 1. **Retrieval quality metrics.** The *router* is now measured
-   (`docs/EVAL.md`): precision 0.976 / recall 0.9499 on 4,000 generated
-   segments, 0.733 / 0.917 on 32 hand-written hard cases, with a CI floor.
+   (`docs/EVAL.md`): precision 0.977 / recall 1.000 on 4,000 generated segments
+   (a saturated set), 0.733 / 0.917 on 32 hand-written hard cases, with a
+   CI floor.
    Retrieval quality — Recall@K, nDCG, groundedness, citation correctness
    — is still unmeasured, and 32 hand-labelled cases is a smoke test
    rather than a benchmark.

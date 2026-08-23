@@ -75,7 +75,11 @@ CREATE TABLE IF NOT EXISTS review_queue (
     payload     TEXT NOT NULL,
     status      TEXT NOT NULL DEFAULT 'open',
     created_at  TEXT NOT NULL,
-    PRIMARY KEY (product_id, issue_key, created_at)
+    -- Keyed on the issue, NOT on (issue, created_at). With created_at in the
+    -- key every run appended a fresh copy, so a queue reviewed once showed
+    -- the same item three times after three runs. A review queue that grows
+    -- with run count instead of with distinct problems is one nobody reads.
+    PRIMARY KEY (product_id, issue_key)
 );
 
 CREATE TABLE IF NOT EXISTS documents (
@@ -197,11 +201,20 @@ def upsert_issue(candidate: IssueCandidate, run_id: str) -> None:
 
 
 def enqueue_review(candidate: IssueCandidate) -> None:
+    """Upsert. Refreshes the evidence behind an open item without resetting
+    when it was first raised -- queue age is what drives triage -- and
+    without silently reopening something a human already closed."""
     from dataclasses import asdict
     with connect() as conn:
-        conn.execute("INSERT OR REPLACE INTO review_queue VALUES (?,?,?,?,?,?)",
-                     (candidate.product_id, candidate.issue_key, candidate.decision_reason,
-                      json.dumps(asdict(candidate)), "open", _now()))
+        conn.execute(
+            """INSERT INTO review_queue (product_id, issue_key, reason, payload,
+                                         status, created_at)
+               VALUES (?,?,?,?,'open',?)
+               ON CONFLICT(product_id, issue_key) DO UPDATE SET
+                   reason  = excluded.reason,
+                   payload = excluded.payload""",
+            (candidate.product_id, candidate.issue_key, candidate.decision_reason,
+             json.dumps(asdict(candidate)), _now()))
 
 
 def query(sql: str, params: tuple = ()) -> list[dict]:

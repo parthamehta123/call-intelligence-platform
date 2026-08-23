@@ -190,18 +190,33 @@ def publish_candidates(spark, candidates: Iterable[IssueCandidate], run_id: str,
         else f"{config.schema}.review_queue"
     if to_review:
         now = datetime.now(timezone.utc)
-        # Explicit schema, always. `createDataFrame` over a list of dicts
-        # sorts the keys alphabetically, and `insertInto` matches by
-        # position -- together they silently shuffle columns into the wrong
-        # slots and fail on the first type that will not cast.
-        queued = spark.createDataFrame([
+        pending = spark.createDataFrame([
             {"product_id": c.product_id, "issue_key": c.issue_key,
              "reason": c.decision_reason or "failed declassification",
              "payload": json.dumps(asdict(c), default=str), "status": "open",
-             "created_at": now, "run_id": run_id, "day": day}
+             "created_at": now, "run_id": run_id}
             for c in to_review
-        ], schema=spark.table(queue_table).schema)
-        write_day_partition(queued, queue_table, day, config)
+        ])
+        pending.createOrReplaceTempView("_cip_review_updates")
+        if config.table_format == "delta":
+            # Upsert on the issue. Appending re-queued the same item on every
+            # run, and preserving created_at keeps queue age meaningful.
+            spark.sql(f"""
+                MERGE INTO {queue_table} AS t
+                USING _cip_review_updates AS s
+                  ON t.product_id = s.product_id AND t.issue_key = s.issue_key
+                WHEN MATCHED THEN UPDATE SET
+                    t.reason = s.reason, t.payload = s.payload, t.run_id = s.run_id
+                WHEN NOT MATCHED THEN INSERT *
+            """)
+        else:
+            existing = spark.table(queue_table)
+            keep = existing.join(pending.select("product_id", "issue_key"),
+                                 ["product_id", "issue_key"], "left_anti")
+            rows = keep.unionByName(pending.select(existing.columns)).collect()
+            spark.createDataFrame(rows, schema=existing.schema) \
+                 .write.mode("overwrite").format(config.table_format) \
+                 .saveAsTable(queue_table)
 
     return {"published": published, "queued_for_review": len(to_review),
             "rejected": len(rejected)}

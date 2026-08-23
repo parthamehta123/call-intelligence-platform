@@ -4,29 +4,85 @@
       "product_id": "X100",
       "canonical_name": "X100 Enterprise Router",
       "family": "networking",
-      "versions": ["7.0", "7.1", "7.2", "7.2.13"],
-      "aliases": ["x100", "x-100", "x 100", "the enterprise router", "big router", "xhundred"]
+      "versions": [
+        "7.0",
+        "7.1",
+        "7.2",
+        "7.2.13"
+      ],
+      "aliases": [
+        "x100",
+        "x-100",
+        "x 100",
+        "the enterprise router",
+        "big router",
+        "xhundred"
+      ],
+      "generic_aliases": [
+        "router"
+      ]
     },
     {
       "product_id": "XG482",
       "canonical_name": "XG-482 Branch Gateway",
       "family": "networking",
-      "versions": ["3.4", "3.5"],
-      "aliases": ["xg482", "xg-482", "xg 482", "branch gateway", "the gateway box"]
+      "versions": [
+        "3.4",
+        "3.5"
+      ],
+      "aliases": [
+        "xg482",
+        "xg-482",
+        "xg 482",
+        "branch gateway",
+        "the gateway box"
+      ],
+      "generic_aliases": [
+        "gateway"
+      ]
     },
     {
       "product_id": "MERIDIAN",
       "canonical_name": "Meridian Cloud Console",
       "family": "software",
-      "versions": ["2024.3", "2024.4"],
-      "aliases": ["meridian", "cloud console", "the console", "web dashboard", "admin portal"]
+      "versions": [
+        "2024.3",
+        "2024.4"
+      ],
+      "aliases": [
+        "meridian",
+        "cloud console",
+        "the console",
+        "web dashboard",
+        "admin portal"
+      ],
+      "generic_aliases": [
+        "console",
+        "dashboard",
+        "portal"
+      ]
     },
     {
       "product_id": "PULSE7",
       "canonical_name": "Pulse 7 Wireless AP",
       "family": "wireless",
-      "versions": ["1.8", "1.9"],
-      "aliases": ["pulse 7", "pulse7", "pulse seven", "access point", "wifi box", "the ap"]
+      "versions": [
+        "1.8",
+        "1.9"
+      ],
+      "aliases": [
+        "pulse 7",
+        "pulse7",
+        "pulse seven",
+        "access point",
+        "wifi box",
+        "the ap"
+      ],
+      "generic_aliases": [
+        "ap",
+        "wifi",
+        "wireless"
+      ]
     }
   ]
 }

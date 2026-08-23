@@ -44,31 +44,58 @@ are mine, and label quality is the ceiling on what these numbers mean.**
 
 | Set | Precision | Recall | Kept | Missed |
 |---|---|---|---|---|
-| Generated (4,000) | 0.976 | **0.9499** | 29.1% | 60 |
+| Generated (4,000) | 0.977 | **1.0000** | 30.6% | 0 |
 | Hard cases (32) | 0.733 | **0.9167** | 46.9% | 1 |
+| Hard cases, excluding the 3 ambiguous | 0.846 | 0.9167 | — | 1 |
 
-The 29.1% kept is the funnel claim made concrete: ~71% of segments never
+The 30.6% kept is the funnel claim made concrete: ~69% of segments never
 reach a model.
+
+### What the first measurement changed
+
+The initial run scored 0.9499 recall on the generated set with 60 misses,
+**all sharing one cause**: entity resolution returned nothing, so the
+segment scored 0.0 before any other feature was read. Two fixes followed,
+both applying the same rule — *a term is evidence exactly while one product
+owns it*:
+
+| Fix | Confidence | Rationale |
+|---|---|---|
+| Generic category nouns (`router`, `console`, `gateway`, `wifi`) | 0.60 | `0.45 × 0.60 = 0.27` sits **below** the threshold on purpose. A category noun alone never admits a segment; it only carries one through alongside real problem language. *"My home router from another vendor"* still scores 0.27 and is correctly dropped. |
+| Unambiguous version strings (`7.2` → X100) | 0.70 | *"After installing firmware 7.2 the VPN keeps disconnecting"* names no product at all. A version is a sharper signal than a category noun, so it ranks above it. `7.99` resolves to nothing — it is not a catalog version. |
+
+Both indexes are built by checking uniqueness across the whole catalog. Ship
+a second router and `router` stops being evidence automatically, rather than
+silently resolving to whichever product happened to be listed first.
+
+Result: recall 0.9499 → **1.0000**, precision 0.976 → 0.977, cost 29.1% →
+30.6% kept. In the pipeline that recovered real signal — observations rose
+1,138 → 1,198, and the X100 reboot issue went from 85 to 107 corroborating
+customers.
+
+### Recall 1.0 means the set is exhausted, not that the router is good
+
+Every signal the generator emits now contains a product noun, a curated
+alias, or a catalog version, so the router resolves all of them. That is
+the circularity in this set reaching its natural end: it has no remaining
+power to discriminate, and a perfect score on it should be read as
+"stop tuning against this", not as evidence of quality.
+
+**The hard cases are now the only informative measure**, and they sit at
+0.917 recall / 0.733 precision — or 0.846 precision excluding the three
+ambiguous judgement calls.
 
 ## Three findings that change what to work on
 
-**1 · Recall is capped at 0.9499, and the threshold cannot lift it.**
-Every threshold above 0 yields the same ceiling. Reaching 0.95 requires
-threshold 0.0 — disabling the funnel entirely. So the threshold is not the
-binding constraint.
+**1 · Recall was capped by entity resolution, not by the threshold.**
+Before the fix, no threshold above 0 could beat 0.9499. The lever was in a
+different component entirely — which is the argument for measuring before
+tuning, since the threshold is the obvious knob and it was the wrong one.
 
-**2 · All 60 missed segments have one identical cause: no product
-resolved.** Not weak problem-term matching, not scoring — entity
-resolution simply returns nothing, so the segment scores 0.0 and is
-dropped before any other feature is considered. The clearest example:
-
-> *"The router reboots on its own at night after firmware 7.2."*
-
-The catalog knows `the enterprise router` and `big router` as aliases, but
-not bare `router`, and that call carried no CRM product hint. **Router
-recall is gated by catalog coverage, not by the scorer.** That is where
-the next work goes — broadening aliases, and back-filling the product hint
-from the account's owned products rather than the case record alone.
+**2 · The fix was catalog coverage, and it cost almost nothing.**
++5 points of recall for +1.5 points of traffic kept. Cheap because the new
+evidence is admitted at low confidence: it lifts segments that also carry
+problem language, without lifting mentions-in-passing.
 
 **3 · The threshold is in a dead zone.** On the generated set every value
 from 0.05 to 0.40 produces identical metrics, because the rule-based
@@ -81,11 +108,14 @@ don't** — which is the entire argument for keeping both.
 
 ## Known weaknesses this surfaces
 
-* **Paraphrase.** *"Exporting the audit report just spins forever"* is
-  missed: the product resolves only via CRM hint (0.75 confidence → 0.3375)
-  and none of *spins forever* / *gives up* appear in the problem-term list.
-  A lexical scorer cannot fix this; an embedding router or a distilled
-  classifier can.
+* **Paraphrase — still the one miss, and deliberately not fixed.**
+  *"Exporting the audit report just spins forever and eventually gives
+  up"* is dropped: the product resolves only via CRM hint (0.3375) and
+  none of *spins forever* / *gives up* appear in the problem-term list.
+  Adding those phrases would close it, and would be overfitting to a test
+  case I wrote myself — with 32 self-authored cases, tuning the lexicon
+  against them measures nothing. The real fix is an embedding router or a
+  distilled classifier, evaluated on cases somebody else labelled.
 * **Product named without a claim.** *"I bought the X100 two years ago.
   Anyway, I'm calling about my billing address"* passes. Expected for a
   bag-of-terms scorer.

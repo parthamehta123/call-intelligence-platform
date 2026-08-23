@@ -74,3 +74,42 @@ def test_recall_ceiling_is_reported_not_hidden(hard):
     rather than silently returning the least-bad option."""
     impossible = best_threshold(hard, min_recall=1.01)
     assert impossible is None
+
+
+def test_generic_aliases_resolve_only_when_unambiguous():
+    """A category noun is evidence exactly while one product owns it."""
+    from cip.catalog import GENERIC_CONFIDENCE, _generic_index, resolve_product
+
+    index = _generic_index()
+    assert index["router"] == "X100"
+    assert len(set(index.values())) == len({v for v in index.values()})
+    pid, conf = resolve_product("the router reboots on its own")
+    assert (pid, conf) == ("X100", GENERIC_CONFIDENCE)
+
+
+def test_generic_alias_alone_cannot_admit_a_segment():
+    """0.45 * 0.60 = 0.27, below the threshold by construction.
+
+    'my home router from another vendor' names a router and reports nothing
+    about ours; it must take actual problem language to get through.
+    """
+    from cip.pipeline.route import score_segment
+    from cip.schemas import Segment
+
+    def seg(text):
+        return Segment(segment_id="S", call_id="C", customer_id="U",
+                       timestamp="2026-08-22T10:00:00+00:00", region="US",
+                       text=f"customer: {text}", speaker_mix={"customer": 1})
+
+    assert score_segment(seg("my home router from another vendor, not your kit")) < THRESHOLD
+    assert score_segment(seg("the router reboots on its own every night")) >= THRESHOLD
+
+
+def test_unambiguous_version_identifies_the_product():
+    """Callers routinely give a version and no product name at all."""
+    from cip.catalog import VERSION_CONFIDENCE, resolve_product
+
+    pid, conf = resolve_product("after installing firmware 7.2 the VPN keeps dropping")
+    assert (pid, conf) == ("X100", VERSION_CONFIDENCE)
+    # A number that is not a catalog version must not resolve anything.
+    assert resolve_product("that cost about 7.99 dollars")[0] is None
