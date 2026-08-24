@@ -77,4 +77,27 @@ class AuditLog:
             self.path.unlink()
 
 
+def trace_model_call(*, component: str, model: str, prompt: str,
+                     response: str, **fields) -> None:
+    """Record a model call verbatim -- after DLP redaction.
+
+    The audit log recorded that a tool ran and what the policy engine
+    decided, but never what the model was actually asked. When a judge
+    starts rejecting correct documents the prompt is the evidence, and this
+    repo spent two runs guessing at intent a trace would have shown.
+
+    Prompts carry customer speech, so they are redacted on the way in. A
+    trace that leaked the PII the pipeline had just removed would undo the
+    boundary it exists to audit.
+    """
+    from .dlp import redact
+
+    clean_prompt, prompt_findings = redact(prompt)
+    clean_response, response_findings = redact(response)
+    audit.write("model_call", component=component, model=model,
+                prompt=clean_prompt[:4000], response=clean_response[:2000],
+                redactions=len(prompt_findings) + len(response_findings),
+                **fields)
+
+
 audit = AuditLog()

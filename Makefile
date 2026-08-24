@@ -1,6 +1,6 @@
 .PHONY: demo run generate status redteam test ask clean wheel \
 	eval-router eval-retrieval eval-retrieval-real eval-retrieval-judge \
-	eval-identifiers eval-audio eval-rerank \
+	eval-identifiers eval-audio eval-rerank eval-groundedness graph \
 	eval-retrieval-judge-claude eval-attribution \
 	spark-setup spark-test spark-run bundle-validate bundle-deploy bundle-run
 
@@ -44,6 +44,12 @@ eval-retrieval: ## Recall@K / MRR / nDCG, leg ablation, routing, abstention
 # anonymous access succeeds -- which previously made the judge fail open on
 # every document and report verdicts that were really just defaults.
 HF_ANON := HF_HUB_DISABLE_IMPLICIT_TOKEN=1
+
+eval-groundedness: ## is every claim in an answer backed by a citation?
+	$(PY) -m cip eval-groundedness
+
+graph:          ## traversal queries over canonical product state
+	$(PY) -m cip graph
 
 eval-identifiers: ## does lexical matching beat dense on near-miss versions?
 	$(HF_ANON) CIP_EMBEDDER=sentence-transformers $(PY) -m cip eval-identifiers

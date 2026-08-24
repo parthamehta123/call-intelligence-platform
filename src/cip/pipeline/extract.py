@@ -228,8 +228,14 @@ def extract_claude(segment: Segment, client=None) -> Observation | None:
     response = client.messages.create(**_build_request(segment))
     if response.stop_reason == "refusal":
         return None
-    payload = json.loads(next(b.text for b in response.content if b.type == "text"))
-    return _from_payload(segment, payload, extractor=CONFIG.claude_model)
+    raw = next(b.text for b in response.content if b.type == "text")
+
+    from ..security.audit import trace_model_call
+    trace_model_call(component="extractor", model=CONFIG.claude_model,
+                     prompt=segment.text, response=raw,
+                     segment_id=segment.segment_id)
+
+    return _from_payload(segment, json.loads(raw), extractor=CONFIG.claude_model)
 
 
 def extract_claude_batch(segments: list[Segment], client=None) -> list[Observation]:

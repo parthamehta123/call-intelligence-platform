@@ -182,8 +182,14 @@ def _judge_claude(query: str, document: str, model: str) -> bool:
     )
     if response.stop_reason == "refusal":
         return True
-    payload = json.loads(next(b.text for b in response.content if b.type == "text"))
+    raw = next(b.text for b in response.content if b.type == "text")
+    payload = json.loads(raw)
     verdict = bool(payload["answers_the_question"])
+
+    from .security.audit import trace_model_call
+    trace_model_call(component="judge", model=model,
+                     prompt=CLAUDE_PROMPT.format(query=query, document=document),
+                     response=raw, verdict=verdict)
     if not verdict:
         REJECTIONS.append({"query": query, "document": document[:70],
                            "reason": payload.get("reason", "")})

@@ -56,7 +56,7 @@ is marked plainly.
 | Customer observation ≠ official truth | **Built** — `observed` vs `confirmed`; chatter never demotes a confirmed row | `kb.py`, `spark/publish.py` |
 | Auto-approve vs supervisor / human review | **Built** — contradictions and spec corrections always route to a human | `pipeline/reconcile.py` |
 | Canonical product state | **Built** — SQLite locally, Delta on Unity Catalog | `kb.py`, `spark/ddl.py` |
-| Knowledge graph | **Not built** — relational only | — |
+| Knowledge graph | **Built** — networkx over the same canonical state (derived, not a second store); shared failure modes, blast radius, issue-to-issue paths | `src/cip/graph.py` |
 | Immutable evidence store | **Built** — append-only, full provenance incl. rejected candidates | `kb.py`, `spark/publish.py` |
 | Change event / CDC | **Built** — dirty flags drive incremental re-embedding | `kb.py`, `retrieval.refresh_index` |
 
@@ -83,10 +83,10 @@ is marked plainly.
 | Policy decisions | **Built** — every allow/deny queryable | `policy_audit` table, `spark/audit_sink.py` |
 | Security events | **Built** | `security/audit.py` |
 | Lineage / provenance | **Built** | `evidence` table |
-| Prompt / tool traces | **Partial** — tool calls and decisions audited; no prompt-level tracing | `security/audit.py` |
+| Prompt / tool traces | **Built** — every model call recorded verbatim with its response, DLP-redacted first so a trace cannot leak the PII the pipeline removed | `security/audit.py` |
 | Router quality (precision / recall / threshold sweep) | **Built** — measured on two labelled sets, with a CI regression gate | `src/cip/eval/`, `docs/EVAL.md` |
 | Retrieval quality (Recall@K, MRR, nDCG, routing, abstention) | **Built** — labelled query set, leg ablation, CI floors | `src/cip/eval/retrieval_eval.py`, `docs/RETRIEVAL.md` |
-| Groundedness of generated answers | **Not built** — trivially 1.0 for the offline agent; needs an LLM judge with the Claude backend | `docs/RETRIEVAL.md` |
+| Groundedness of generated answers | **Built** — per-sentence support against cited documents, plus a fabricated-citation count; 1.000 on the offline agent, which confirms the plumbing rather than testing generation | `src/cip/eval/groundedness_eval.py` |
 | Abstention judge | **Built** — `claude-opus-5` framed as a retrieval filter achieves 2/2 abstention where rerank score, similarity, a cross-encoder and a 1.5B judge all failed; measured cost is one document the labels had wrong | `src/cip/judge.py`, `docs/RETRIEVAL.md` |
 
 ## The six that are genuinely missing

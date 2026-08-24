@@ -123,6 +123,18 @@ def _cmd_eval_identifiers(args) -> int:
     return 0
 
 
+def _cmd_graph(args) -> int:
+    from .graph import render
+    print(render())
+    return 0
+
+
+def _cmd_eval_groundedness(args) -> int:
+    from .eval.groundedness_eval import evaluate_groundedness
+    print(evaluate_groundedness().render())
+    return 0
+
+
 def _cmd_audit(args) -> int:
     from .security.audit import audit
     for record in audit.tail(args.limit, event=args.event):
@@ -224,6 +236,13 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("eval-identifiers",
                        help="does lexical matching beat dense on near-miss versions?")
     p.set_defaults(func=_cmd_eval_identifiers)
+
+    p = sub.add_parser("eval-groundedness",
+                       help="is every claim in an answer backed by a citation?")
+    p.set_defaults(func=_cmd_eval_groundedness)
+
+    p = sub.add_parser("graph", help="traversal queries over canonical state")
+    p.set_defaults(func=_cmd_graph)
 
     p = sub.add_parser("demo", help="end-to-end walkthrough")
     p.add_argument("--calls", type=int, default=4000)
