@@ -76,7 +76,11 @@ def run(day: str, raw_path: str | None = None, config=SPARK, spark=None,
                 extractor=CONFIG.extractor, table_format=config.table_format)
 
     raw_path = raw_path or config.raw_path
-    calls = (spark.read.schema(CALL).json(f"{raw_path}/date={day}")
+    # Explicit glob, not the bare directory. The day directory also holds
+    # `_MANIFEST.json` and the eval sidecar `_LABELS.jsonl`; reading the
+    # directory wholesale parses those as calls, which silently doubles the
+    # call count and injects rows with no turns.
+    calls = (spark.read.schema(CALL).json(f"{raw_path}/date={day}/part-*.jsonl")
              .repartition(config.shuffle_partitions))
     call_count = calls.count()
 

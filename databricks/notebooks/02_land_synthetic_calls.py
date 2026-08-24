@@ -49,7 +49,10 @@ print("generated locally:", local_dir)
 target = f"{raw_root}/date={day}"
 dbutils.fs.mkdirs(target)
 
-for path in sorted(local_dir.glob("*.jsonl")) + [local_dir / "_MANIFEST.json"]:
+# Only the call partitions and the manifest. `_LABELS.jsonl` is evaluation
+# ground truth, not raw data -- it stays out of the raw volume so nothing
+# downstream can read the router's own answer.
+for path in sorted(local_dir.glob("part-*.jsonl")) + [local_dir / "_MANIFEST.json"]:
     shutil.copy(path, f"{target}/{path.name}")
 
 display(dbutils.fs.ls(target))

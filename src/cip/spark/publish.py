@@ -194,7 +194,7 @@ def publish_candidates(spark, candidates: Iterable[IssueCandidate], run_id: str,
             {"product_id": c.product_id, "issue_key": c.issue_key,
              "reason": c.decision_reason or "failed declassification",
              "payload": json.dumps(asdict(c), default=str), "status": "open",
-             "created_at": now, "run_id": run_id}
+             "created_at": now, "run_id": run_id, "day": day}
             for c in to_review
         ])
         pending.createOrReplaceTempView("_cip_review_updates")
@@ -206,7 +206,8 @@ def publish_candidates(spark, candidates: Iterable[IssueCandidate], run_id: str,
                 USING _cip_review_updates AS s
                   ON t.product_id = s.product_id AND t.issue_key = s.issue_key
                 WHEN MATCHED THEN UPDATE SET
-                    t.reason = s.reason, t.payload = s.payload, t.run_id = s.run_id
+                    t.reason = s.reason, t.payload = s.payload,
+                    t.run_id = s.run_id, t.day = s.day
                 WHEN NOT MATCHED THEN INSERT *
             """)
         else:
