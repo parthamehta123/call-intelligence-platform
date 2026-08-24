@@ -11,8 +11,9 @@ router discarded. So recall is the constraint and precision is the budget,
 never the other way round.
 """
 
+from .attribution_eval import AttributionReport, evaluate_attribution
 from .dataset import EvalCase, load_generated, load_hard_cases
 from .router_eval import Metrics, evaluate, sweep
 
-__all__ = ["EvalCase", "load_generated", "load_hard_cases", "Metrics",
+__all__ = ["AttributionReport", "evaluate_attribution", "EvalCase", "load_generated", "load_hard_cases", "Metrics",
            "evaluate", "sweep"]

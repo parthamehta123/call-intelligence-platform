@@ -32,14 +32,25 @@ _SMALL_TALK = re.compile(
     r"(?i)^(hi|hello|thanks|thank you|sure|okay|ok|no problem|have a great|good morning)\b")
 
 
-def identify_product(segment: Segment) -> tuple[str | None, float]:
-    """Transcript first, then the case's structured product hint.
+def customer_text(segment: Segment) -> str:
+    return "\n".join(
+        line for line in segment.text.splitlines() if line.startswith("customer:"))
 
-    Text evidence outranks metadata when both exist -- the caller may have
-    been routed to the wrong queue -- but the hint keeps the ~40% of calls
-    that never say a product name from being silently discarded.
+
+def identify_product(segment: Segment) -> tuple[str | None, float]:
+    """Customer speech first, then the case's structured product hint.
+
+    Resolution reads the CUSTOMER channel only. Reading the whole segment
+    took the product identity from the agent: a caller asking about billing
+    while the agent mentioned "the cloud console" resolved to MERIDIAN at
+    0.9, which alone scored 0.405 and cleared the 0.35 threshold. That put
+    290 segments containing no customer product-talk in front of a model.
+
+    The hint is exempt because it is structured CRM metadata, not speech --
+    and it is what keeps the ~40% of calls that never name a product from
+    being silently discarded.
     """
-    product_id, confidence = resolve_product(segment.text)
+    product_id, confidence = resolve_product(customer_text(segment))
     if product_id is not None:
         return product_id, confidence
     if segment.product_hint:
@@ -48,10 +59,14 @@ def identify_product(segment: Segment) -> tuple[str | None, float]:
 
 
 def score_segment(segment: Segment) -> float:
-    customer_text = "\n".join(
-        line for line in segment.text.splitlines() if line.startswith("customer:")
-    ) or segment.text
-    lowered = customer_text.lower()
+    # No fallback to the whole segment. A segment with no customer speech
+    # cannot yield a customer observation, so routing it to a model spends
+    # money to produce nothing -- and, before the extractor was fixed,
+    # produced an observation attributed to the agent's words.
+    spoken = customer_text(segment)
+    if not spoken.strip():
+        return 0.0
+    lowered = spoken.lower()
 
     product_id, product_conf = identify_product(segment)
     if product_id is None:
@@ -65,7 +80,7 @@ def score_segment(segment: Segment) -> float:
         score += 0.20
     if any(term in lowered for term in SPEC_TERMS):
         score += 0.15
-    if resolve_version(customer_text, product_id):
+    if resolve_version(spoken, product_id):
         score += 0.15
     if _SMALL_TALK.match(lowered.strip()):
         score -= 0.20

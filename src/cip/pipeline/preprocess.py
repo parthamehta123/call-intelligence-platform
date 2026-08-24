@@ -50,8 +50,16 @@ def segment_call(call: CallRecord) -> list[Segment]:
         raw = "\n".join(f"{t['speaker']}: {t['text']}" for t in group)
         clean, findings = redact(raw)
         mix: dict[str, int] = {}
+        customer_conf: list[float] = []
         for turn in group:
             mix[turn["speaker"]] = mix.get(turn["speaker"], 0) + 1
+            if turn["speaker"] == "customer":
+                # `.get(key, default)` is not enough: Spark supplies the key
+                # with a None value for partitions written before the column
+                # existed, so the default never fires. Absent OR null means
+                # "not captured", which is treated as trusted.
+                confidence = turn.get("speaker_confidence")
+                customer_conf.append(1.0 if confidence is None else float(confidence))
         segments.append(Segment(
             segment_id=_segment_id(call.call_id, index),
             call_id=call.call_id,
@@ -60,6 +68,8 @@ def segment_call(call: CallRecord) -> list[Segment]:
             region=call.region,
             text=clean,
             speaker_mix=mix,
+            customer_turns=len(customer_conf),
+            attribution_confidence=min(customer_conf) if customer_conf else 0.0,
             product_hint=call.product_hint,
             trust=TRUST_UNTRUSTED,
             pii_redactions=len(findings),

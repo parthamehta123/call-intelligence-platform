@@ -15,6 +15,7 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Iterable
 
+from ..config import CONFIG
 from ..schemas import IssueCandidate, Observation
 
 RESOLVED_PREFIX = "RESOLVED CLAIM:"
@@ -43,7 +44,14 @@ def aggregate(observations: Iterable[Observation]) -> list[IssueCandidate]:
             summary=majority[0].summary,
             severity=max(severities, key=lambda s: rank[s]),
             mentions=len(items),
-            distinct_customers=len({o.customer_id for o in items}),
+            # Corroboration counts only well-attributed claims. A weakly
+            # diarized turn might be the agent restating a known defect, and
+            # letting it count as a distinct customer is precisely how
+            # attribution error inflates the issues agents discuss most --
+            # the ones already nearest the auto-accept threshold.
+            distinct_customers=len({
+                o.customer_id for o in items
+                if o.attribution_confidence >= CONFIG.attribution_floor}),
             regions=sorted({o.region for o in items}),
             versions=sorted({o.product_version for o in items if o.product_version}),
             first_seen=timestamps[0],

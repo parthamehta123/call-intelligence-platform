@@ -22,7 +22,7 @@ import os
 import re
 from typing import Iterable, Iterator
 
-from ..catalog import resolve_version
+from ..catalog import resolve_product, resolve_version
 from ..config import CONFIG
 from ..schemas import Observation, Segment, TRUST_DERIVED
 from ..security.prompt_guard import injection_risk
@@ -60,6 +60,12 @@ Extract at most one product observation per transcript. Report only what the
 CUSTOMER stated about a product. Do not infer, do not resolve contradictions,
 and do not decide whether the claim is true -- downstream stages do that.
 Set is_product_signal to false when the transcript contains no product claim.
+
+Speaker attribution is not advisory. Turns are labelled `customer:` and
+`agent:`. A support agent restating a known defect -- "yes, we are aware
+7.2 drops the VPN" -- is NOT a customer report, and must not become an
+observation. If the only mention of a defect comes from the agent, set
+is_product_signal to false. Quote evidence exclusively from customer turns.
 """
 
 # --- offline rules backend -------------------------------------------------
@@ -92,10 +98,33 @@ def _observation_id(segment_id: str, issue_key: str) -> str:
     return "O" + hashlib.sha1(f"{segment_id}:{issue_key}".encode()).hexdigest()[:14]
 
 
+def _customer_turns(segment: Segment) -> list[str]:
+    """Customer speech, one utterance per element.
+
+    Issue and product must be read from the SAME utterance. Matching
+    patterns across the whole concatenated segment paired an issue found in
+    one sentence with a product resolved from another, minting combinations
+    nobody reported -- MERIDIAN/VPN_DISCONNECT, PULSE7/SPONTANEOUS_REBOOT.
+    That was always possible; a second topic in the segment (an agent
+    restatement relabelled by diarization) is what made it common.
+    """
+    return [l[len("customer: "):] for l in segment.text.splitlines()
+            if l.startswith("customer: ") and l[len("customer: "):].strip()]
+
+
 def _customer_lines(segment: Segment) -> str:
-    lines = [l[len("customer: "):] for l in segment.text.splitlines()
-             if l.startswith("customer: ")]
-    return " ".join(lines) or segment.text
+    """Customer speech only, and no fallback to the full segment.
+
+    The fallback used to read `or segment.text`, so a segment containing no
+    customer turns was extracted from the AGENT's words. That is not a
+    cosmetic bug: agents restate known defects on nearly every call about
+    them ("yes, we know 7.2 drops the VPN"), so the misattribution is
+    systematically concentrated on the issues that already have the most
+    reports -- inflating exactly the counts nearest the auto-accept
+    threshold. An empty string here yields no observation, which is correct.
+    """
+    return " ".join(l[len("customer: "):] for l in segment.text.splitlines()
+                    if l.startswith("customer: "))
 
 
 
@@ -109,39 +138,63 @@ def _sentence_around(text: str, start: int, end: int) -> str:
 
 
 def extract_rules(segment: Segment) -> Observation | None:
-    text = _customer_lines(segment)
-    if segment.product_id is None:
+    turns = _customer_turns(segment)
+    if segment.product_id is None or not turns:
         return None
 
-    for issue_key, kind, severity, summary, pattern in _PATTERNS:
-        match = pattern.search(text)
-        if not match:
-            continue
-        fixed = bool(_FIX_CLAIM.search(text))
-        evidence = _sentence_around(text, match.start(), match.end())
-        confidence = round(min(0.97, 0.55 + 0.4 * segment.product_confidence), 3)
-        # Injection-bearing segments are extracted but heavily discounted; the
-        # policy layer, not the confidence score, is what actually contains them.
-        confidence *= (1.0 - injection_risk(text))
-        return Observation(
-            observation_id=_observation_id(segment.segment_id, issue_key),
-            segment_id=segment.segment_id,
-            call_id=segment.call_id,
-            customer_id=segment.customer_id,
-            product_id=segment.product_id,
-            product_version=resolve_version(text, segment.product_id),
-            type="praise" if fixed and kind == "bug_report" else kind,
-            issue_key=issue_key,
-            summary=f"RESOLVED CLAIM: {summary}" if fixed else summary,
-            severity="low" if fixed else severity,
-            evidence=evidence[:400],
-            confidence=round(confidence, 3),
-            region=segment.region,
-            timestamp=segment.timestamp,
-            trust=TRUST_DERIVED,
-            extractor="rules-v1",
-        )
-    return None
+    best: Observation | None = None
+    for turn in turns:
+        for issue_key, kind, severity, summary, pattern in _PATTERNS:
+            match = pattern.search(turn)
+            if not match:
+                continue
+
+            # Product from this utterance where it resolves; the segment's
+            # product only as a fallback. Keeping both from one utterance is
+            # what prevents cross-product pairings.
+            turn_product, turn_confidence = resolve_product(turn)
+            if turn_product is None:
+                turn_product, turn_confidence = segment.product_id, segment.product_confidence
+
+            fixed = bool(_FIX_CLAIM.search(turn))
+            evidence = _sentence_around(turn, match.start(), match.end())
+            confidence = round(min(0.97, 0.55 + 0.4 * turn_confidence), 3)
+            # Injection-bearing segments are extracted but heavily discounted;
+            # the policy layer, not the confidence score, contains them.
+            confidence *= (1.0 - injection_risk(turn))
+            # Scale by how sure we are the customer said it. Weakly-diarized
+            # claims are not dropped -- they need more corroboration to clear
+            # reconciliation, which is the honest treatment of uncertain
+            # attribution rather than silent deletion.
+            confidence *= segment.attribution_confidence
+
+            observation = Observation(
+                observation_id=_observation_id(segment.segment_id, issue_key),
+                segment_id=segment.segment_id,
+                call_id=segment.call_id,
+                customer_id=segment.customer_id,
+                product_id=turn_product,
+                product_version=resolve_version(turn, turn_product),
+                type="praise" if fixed and kind == "bug_report" else kind,
+                issue_key=issue_key,
+                summary=f"RESOLVED CLAIM: {summary}" if fixed else summary,
+                severity="low" if fixed else severity,
+                evidence=evidence[:400],
+                confidence=round(confidence, 3),
+                region=segment.region,
+                timestamp=segment.timestamp,
+                trust=TRUST_DERIVED,
+                extractor="rules-v1",
+                speaker="customer",
+                attribution_confidence=segment.attribution_confidence,
+            )
+            # One observation per segment, as before. Prefer the utterance
+            # whose own product resolution agrees with the segment's, then
+            # the most confident.
+            if best is None or observation.confidence > best.confidence:
+                best = observation
+            break
+    return best
 
 
 # --- Claude backend --------------------------------------------------------
@@ -224,6 +277,8 @@ def _from_payload(segment: Segment, payload: dict, extractor: str) -> Observatio
     issue_key = re.sub(r"[^A-Z0-9_]", "_", str(payload.get("issue_key", "")).upper())[:60]
     return Observation(
         observation_id=_observation_id(segment.segment_id, issue_key),
+        speaker="customer",
+        attribution_confidence=segment.attribution_confidence,
         segment_id=segment.segment_id,
         call_id=segment.call_id,
         customer_id=segment.customer_id,
@@ -236,7 +291,9 @@ def _from_payload(segment: Segment, payload: dict, extractor: str) -> Observatio
         summary=str(payload.get("summary", ""))[:200],
         severity=str(payload.get("severity", "")),
         evidence=str(payload.get("evidence", ""))[:400],
-        confidence=float(payload.get("confidence", 0.0)),
+        # The model's own confidence is still scaled by attribution: it can
+        # read the speaker labels, but it cannot know how good they are.
+        confidence=float(payload.get("confidence", 0.0)) * segment.attribution_confidence,
         region=segment.region,
         timestamp=segment.timestamp,
         trust=TRUST_DERIVED,

@@ -18,6 +18,9 @@ TURN = StructType([
     StructField("speaker", StringType(), False),
     StructField("text", StringType(), False),
     StructField("start_time", DoubleType(), True),
+    # Diarization confidence for this turn. Nullable: historic partitions
+    # predate it, and preprocessing treats a missing value as 1.0.
+    StructField("speaker_confidence", DoubleType(), True),
 ])
 
 CALL = StructType([
@@ -38,6 +41,8 @@ SEGMENT = StructType([
     StructField("region", StringType(), False),
     StructField("text", StringType(), False),
     StructField("speaker_mix", MapType(StringType(), IntegerType()), True),
+    StructField("customer_turns", IntegerType(), True),
+    StructField("attribution_confidence", DoubleType(), True),
     StructField("product_hint", StringType(), True),
     StructField("trust", StringType(), False),
     StructField("product_id", StringType(), True),
@@ -64,6 +69,8 @@ OBSERVATION = StructType([
     StructField("timestamp", StringType(), False),
     StructField("trust", StringType(), False),
     StructField("extractor", StringType(), False),
+    StructField("speaker", StringType(), True),
+    StructField("attribution_confidence", DoubleType(), True),
 ])
 
 # Stage metrics emitted per partition, unioned and summed on the driver.

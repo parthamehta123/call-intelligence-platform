@@ -61,6 +61,13 @@ class Segment:
     region: str
     text: str
     speaker_mix: dict[str, int]
+    # Diarization provenance. `attribution_confidence` is the MINIMUM speaker
+    # confidence across the segment's customer turns -- deliberately the
+    # conservative reading: if any customer turn is poorly diarized, the whole
+    # segment's attribution is suspect, because a flat text rendering cannot
+    # say which turn a matched phrase came from.
+    customer_turns: int = 0
+    attribution_confidence: float = 1.0
     product_hint: str | None = None
     trust: str = TRUST_UNTRUSTED
     product_id: str | None = None
@@ -93,6 +100,11 @@ class Observation:
     timestamp: str
     trust: str = TRUST_DERIVED
     extractor: str = "unknown"
+    # Who actually said it. Only ever "customer": an agent restating a known
+    # defect is not a customer report, and counting it as one inflates the
+    # very issues agents talk about most.
+    speaker: str = "customer"
+    attribution_confidence: float = 1.0
 
     def validate(self) -> list[str]:
         """Schema validation. Anything that fails here never reaches the KB."""
@@ -109,6 +121,10 @@ class Observation:
             errors.append(f"issue_key {self.issue_key!r} malformed")
         if len(self.evidence) > 400:
             errors.append("evidence too long (possible prompt smuggling)")
+        if self.speaker != "customer":
+            errors.append(f"speaker {self.speaker!r}: only customer claims are observations")
+        if not 0.0 <= self.attribution_confidence <= 1.0:
+            errors.append(f"attribution_confidence {self.attribution_confidence} out of range")
         return errors
 
 

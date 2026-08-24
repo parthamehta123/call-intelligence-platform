@@ -61,6 +61,8 @@ DDL = {
             region STRING,
             text STRING,
             speaker_mix MAP<STRING, INT>,
+            customer_turns INT,
+            attribution_confidence DOUBLE,
             product_hint STRING,
             trust STRING,
             product_id STRING,
@@ -95,6 +97,8 @@ DDL = {
             timestamp STRING,
             trust STRING,
             extractor STRING,
+            speaker STRING,
+            attribution_confidence DOUBLE,
             run_id STRING,
             day STRING
         ) USING {fmt}

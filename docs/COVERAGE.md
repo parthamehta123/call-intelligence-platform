@@ -5,7 +5,7 @@ in this repo. Every "Built" below was checked against the code, not
 remembered. Anything a reader could reasonably assume works and does not
 is marked plainly.
 
-**Built 25 · Partial 7 · Not built 6**
+**Built 25 · Partial 8 · Not built 5**
 
 ## Ingestion and preprocessing
 
@@ -13,7 +13,7 @@ is marked plainly.
 |---|---|---|
 | Raw data lake, partitioned | **Partial** — `date=` only; region / call-centre partitioning is described but not implemented | `generate.py`, `pipeline/ingest.py`; a UC volume on Databricks |
 | Transcription (audio → text) | **Not built** — fixtures are text | — |
-| Speaker diarization | **Not built** — speaker labels arrive pre-set | — |
+| Speaker diarization | **Partial** — no audio, so labels come from the generator; the *contract* and its error handling are built and measured | `docs/ATTRIBUTION.md`, `src/cip/eval/attribution_eval.py` |
 | Normalization / dedup | **Built** — content-hash dedupe, global shuffle on Spark | `pipeline/preprocess.py`, `spark/dedupe.py` |
 | Language detection | **Not built** | — |
 | PII masking | **Built** — redacted at the boundary, before persistence | `security/dlp.py`, applied in `preprocess.py` |
@@ -97,9 +97,12 @@ Ranked by how much they matter to the architecture's claims:
    Retrieval quality — Recall@K, nDCG, groundedness, citation correctness
    — is still unmeasured, and 32 hand-labelled cases is a smoke test
    rather than a benchmark.
-2. **Transcription + diarization.** The input assumption. "The customer
-   said X" vs "the agent said X" changes extraction, and nothing verifies
-   that split today.
+2. **Transcription.** Still no audio path. Diarization is now handled as a
+   contract rather than assumed away — agent speech can never become a
+   customer observation, weak attribution scales confidence, and
+   corroboration counts only well-attributed claims (`docs/ATTRIBUTION.md`,
+   0.95% measured contamination). Real ASR and a real diarizer remain
+   unbuilt.
 3. **Sandbox isolation.** The security story ends at "the agent holds no
    dangerous tools". It does not cover the case where privileged execution
    is genuinely required.

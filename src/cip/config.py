@@ -27,6 +27,11 @@ class Config:
     # Only segments above this score reach an LLM. At 10 TB/day this single
     # threshold is the difference between a $40k and a $2M daily inference bill.
     relevance_threshold: float = 0.35
+    # Below this diarization confidence a customer turn is not trusted to be
+    # the customer. Not a hard drop -- the observation is still emitted, with
+    # confidence scaled by attribution, so weakly-attributed claims need more
+    # corroboration to clear reconciliation rather than being silently lost.
+    attribution_floor: float = 0.50
     max_segment_chars: int = 1200
 
     # --- reconciliation ---------------------------------------------------

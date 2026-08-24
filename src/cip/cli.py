@@ -99,6 +99,12 @@ def _cmd_eval_router(args) -> int:
     return 0
 
 
+def _cmd_eval_attribution(args) -> int:
+    from .eval.attribution_eval import evaluate_attribution
+    print(evaluate_attribution(day=args.day).render())
+    return 0
+
+
 def _cmd_audit(args) -> int:
     from .security.audit import audit
     for record in audit.tail(args.limit, event=args.event):
@@ -185,6 +191,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--threshold", type=float, default=None)
     p.add_argument("--day", **day)
     p.set_defaults(func=_cmd_eval_router)
+
+    p = sub.add_parser("eval-attribution", help="check evidence really came from the customer")
+    p.add_argument("--day", **day)
+    p.set_defaults(func=_cmd_eval_attribution)
 
     p = sub.add_parser("demo", help="end-to-end walkthrough")
     p.add_argument("--calls", type=int, default=4000)

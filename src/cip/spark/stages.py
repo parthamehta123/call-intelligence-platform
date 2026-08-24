@@ -58,6 +58,14 @@ def _null(value):
     return None if value is pd.NaT or value is pd.NA else value
 
 
+def _num(value, default: float) -> float:
+    """Numeric coercion that survives partitions written before a column
+    existed. `or default` would be wrong: 0.0 is a meaningful
+    attribution_confidence (no customer turns at all), not a missing value."""
+    value = _null(value)
+    return default if value is None else float(value)
+
+
 def _frame(records: list[dict], columns: list[str]) -> pd.DataFrame:
     # An empty partition still has to yield a correctly-shaped frame, or
     # Spark fails the whole stage on schema mismatch rather than the task.
@@ -100,6 +108,11 @@ def route_and_extract_batches(batches: Iterator[pd.DataFrame]) -> Iterator[pd.Da
                 customer_id=row["customer_id"], timestamp=row["timestamp"],
                 region=row["region"], text=row["text"],
                 speaker_mix=dict(_null(row["speaker_mix"]) or {}),
+                customer_turns=int(_num(row.get("customer_turns"), 0)),
+                # Missing means the partition predates diarization capture, so
+                # it is trusted -- consistent with preprocessing treating an
+                # absent per-turn speaker_confidence as 1.0.
+                attribution_confidence=_num(row.get("attribution_confidence"), 1.0),
                 product_hint=_null(row.get("product_hint")), trust=row["trust"],
                 pii_redactions=int(row["pii_redactions"]),
             )
@@ -119,6 +132,11 @@ def score_relevance_batches(batches: Iterator[pd.DataFrame]) -> Iterator[pd.Data
                 customer_id=row["customer_id"], timestamp=row["timestamp"],
                 region=row["region"], text=row["text"],
                 speaker_mix=dict(_null(row["speaker_mix"]) or {}),
+                customer_turns=int(_num(row.get("customer_turns"), 0)),
+                # Missing means the partition predates diarization capture, so
+                # it is trusted -- consistent with preprocessing treating an
+                # absent per-turn speaker_confidence as 1.0.
+                attribution_confidence=_num(row.get("attribution_confidence"), 1.0),
                 product_hint=_null(row.get("product_hint")), trust=row["trust"],
                 pii_redactions=int(row["pii_redactions"]),
             )
