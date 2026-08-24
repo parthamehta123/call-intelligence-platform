@@ -61,6 +61,11 @@ class Config:
         "CIP_JUDGE_MODEL",
         "claude-opus-5" if os.environ.get("CIP_JUDGE") == "claude"
         else "Qwen/Qwen2.5-1.5B-Instruct")
+    # Cross-encoder reranking. Off by default so the demo and tests need no
+    # model; the heuristic reranker remains the fallback.
+    reranker: str = os.environ.get("CIP_RERANKER", "none")
+    reranker_model: str = os.environ.get(
+        "CIP_RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
     rrf_k: int = 60                      # reciprocal-rank-fusion constant
     top_k: int = 5
 

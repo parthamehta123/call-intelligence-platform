@@ -57,6 +57,37 @@ also a rare token, so BM25 has no chance to be uniquely right. The claim
 that identifiers *need* lexical matching remains **unproven** — it needs a
 corpus where near-miss identifiers actually collide.
 
+## The hybrid claim, settled
+
+The main eval could not test it: with ten documents every version string is
+also a rare token, so BM25 never had a chance to be *uniquely* right.
+`make eval-identifiers` builds the corpus the claim actually describes —
+release notes identical except for the version — and measures each leg.
+
+| leg | top-1 (real encoder) |
+|---|---|
+| dense | **0.667** |
+| bm25 | 1.000 |
+| hybrid, equal weights | 0.833 |
+| hybrid, identifier-weighted | **1.000** |
+
+The claim is **proven**: MiniLM ranked `7.2.1` first for a query about
+`7.2`, and again for a query about `7.1`. Near-miss identifiers are exactly
+where dense retrieval fails.
+
+The second finding was not expected. **Equal-weight fusion was worse than
+BM25 alone** — the dense leg's error dragged down cases lexical had right,
+so "hybrid" was not unconditionally better and saying so was wrong. Fusion
+now weights the lexical leg 3:1 when the query carries a version or SKU,
+which restores 1.000 without giving up the dense leg's paraphrase
+advantage elsewhere.
+
+Worth noting how close this came to reporting nothing: the identifier eval
+originally computed its own equal-weight fusion, so it measured a *copy* of
+the retriever and reported 0.833 unchanged after the real weighting was
+fixed. An eval that reimplements the system under test measures the
+reimplementation.
+
 ## Two bugs the measurement found
 
 **The tokenizer swallowed sentence-final punctuation.** `[a-z0-9][a-z0-9\.\-_]*`

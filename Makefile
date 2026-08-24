@@ -1,5 +1,6 @@
 .PHONY: demo run generate status redteam test ask clean wheel \
 	eval-router eval-retrieval eval-retrieval-real eval-retrieval-judge \
+	eval-identifiers eval-audio eval-rerank \
 	eval-retrieval-judge-claude eval-attribution \
 	spark-setup spark-test spark-run bundle-validate bundle-deploy bundle-run
 
@@ -43,6 +44,17 @@ eval-retrieval: ## Recall@K / MRR / nDCG, leg ablation, routing, abstention
 # anonymous access succeeds -- which previously made the judge fail open on
 # every document and report verdicts that were really just defaults.
 HF_ANON := HF_HUB_DISABLE_IMPLICIT_TOKEN=1
+
+eval-identifiers: ## does lexical matching beat dense on near-miss versions?
+	$(HF_ANON) CIP_EMBEDDER=sentence-transformers $(PY) -m cip eval-identifiers
+
+eval-audio:     ## ASR / language ID / diarization accuracy on real audio
+	$(HF_ANON) $(PY) -m cip eval-audio
+
+# KMP_DUPLICATE_LIB_OK: faiss and torch each link an OpenMP runtime, which
+# aborts the process on macOS when both load. Documented workaround.
+eval-rerank:    ## retrieval quality with the cross-encoder reranker
+	$(HF_ANON) KMP_DUPLICATE_LIB_OK=TRUE CIP_RERANKER=cross-encoder $(PY) -m cip eval-retrieval
 
 eval-retrieval-judge: ## same eval with the local LLM abstention judge
 	$(HF_ANON) CIP_JUDGE=local $(PY) -m cip eval-retrieval

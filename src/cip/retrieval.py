@@ -81,12 +81,33 @@ class Doc:
 
 
 class Index:
-    """BM25 statistics + vectors, persisted as JSON."""
+    """BM25 statistics + vectors, persisted as JSON.
+
+    The scoring structures are rebuilt on load rather than serialised: an
+    inverted index and a FAISS index are both derived data, and persisting
+    them would add a second thing to keep in step with the documents.
+    """
 
     def __init__(self) -> None:
         self.docs: dict[str, Doc] = {}
         self.df: Counter[str] = Counter()
         self.avg_len: float = 1.0
+        self._vectors: "VectorIndex | None" = None
+        self._inverted: "InvertedIndex | None" = None
+
+    def _rebuild_backends(self) -> None:
+        from .index_backends import InvertedIndex, VectorIndex
+
+        self._inverted = InvertedIndex()
+        self._inverted.build({d.doc_id: d.tokens for d in self.docs.values()})
+
+        vectors = VectorIndex()
+        if vectors.available and self.docs:
+            ordered = list(self.docs.values())
+            vectors.build([d.doc_id for d in ordered], [d.vector for d in ordered])
+            self._vectors = vectors
+        else:
+            self._vectors = None
 
     # -- incremental maintenance (CDC) ------------------------------------
     def upsert(self, rows: list[dict]) -> list[str]:
@@ -109,6 +130,7 @@ class Index:
             self.docs[doc.doc_id] = doc
             self.df.update(set(doc.tokens))
         self._recompute_avg()
+        self._rebuild_backends()
         return [row["doc_id"] for row in rows]
 
     def _remove_stats(self, doc: Doc) -> None:
@@ -123,6 +145,11 @@ class Index:
 
     # -- scoring -----------------------------------------------------------
     def bm25(self, query: str, k1: float = 1.5, b: float = 0.75) -> list[tuple[str, float]]:
+        if self._inverted is not None:
+            return self._inverted.search(tokenize(query))
+        return self._bm25_scan(query, k1, b)
+
+    def _bm25_scan(self, query: str, k1: float = 1.5, b: float = 0.75) -> list[tuple[str, float]]:
         n_docs = len(self.docs) or 1
         query_tokens = tokenize(query)
         scores: dict[str, float] = {}
@@ -144,6 +171,11 @@ class Index:
 
     def dense(self, query: str) -> list[tuple[str, float]]:
         query_vector = embed(query)
+        if self._vectors is not None:
+            return self._vectors.search(query_vector, top_k=max(20, len(self.docs)))
+        return self._dense_scan(query_vector)
+
+    def _dense_scan(self, query_vector: list[float]) -> list[tuple[str, float]]:
         scored = [(doc_id, cosine(query_vector, doc.vector))
                   for doc_id, doc in self.docs.items()]
         return sorted([s for s in scored if s[1] > 0], key=lambda kv: -kv[1])
@@ -182,6 +214,7 @@ class Index:
         index.docs = {k: Doc(**v) for k, v in raw["docs"].items()}
         index.df = Counter(raw["df"])
         index.avg_len = raw["avg_len"]
+        index._rebuild_backends()
         return index
 
 
@@ -201,6 +234,29 @@ def refresh_index() -> int:
     index.save()
     kb.mark_clean(updated)
     return len(updated)
+
+
+_IDENTIFIER = re.compile(r"\b\d+\.\d+(?:\.\d+)?\b|\b[A-Z]{1,3}-?\d{2,4}\b")
+
+
+def _leg_weights(query: str, mode: str) -> tuple[float, ...]:
+    """Weight the lexical leg up when the query carries an identifier.
+
+    Measured, not assumed. On a corpus of near-identical release notes
+    differing only by version (`cip.eval.identifier_eval`), a real encoder
+    scored 0.667 -- it ranked 7.2.1 first for a query about 7.2 and again
+    for a query about 7.1 -- while BM25 scored 1.000. Plain equal-weight
+    fusion landed at 0.833: the dense leg's error dragged down cases
+    lexical had right.
+
+    So hybrid is not unconditionally better, and the fix is not to abandon
+    fusion but to stop pretending both legs are equally trustworthy about
+    exact strings. A version or SKU in the query is precisely when lexical
+    matching is the reliable signal.
+    """
+    if mode != "hybrid":
+        return (1.0,)
+    return (3.0, 1.0) if _IDENTIFIER.search(query) else (1.0, 1.0)
 
 
 def _extract_filters(query: str) -> dict[str, str]:
@@ -236,14 +292,15 @@ def hybrid_search(query: str, top_k: int | None = None,
 
     rankings = {"hybrid": (lexical, dense),
                 "bm25": (lexical,), "dense": (dense,)}[mode]
+    weights = _leg_weights(query, mode)
     dense_scores = dict(dense) if mode in ("hybrid", "dense") else {}
 
     # Reciprocal rank fusion: rank-based, so the two score scales never
     # need calibrating against each other.
     fused: dict[str, float] = {}
-    for ranking in rankings:
+    for weight, ranking in zip(weights, rankings):
         for rank, (doc_id, _) in enumerate(ranking):
-            fused[doc_id] = fused.get(doc_id, 0.0) + 1.0 / (CONFIG.rrf_k + rank + 1)
+            fused[doc_id] = fused.get(doc_id, 0.0) + weight / (CONFIG.rrf_k + rank + 1)
 
     ranked = sorted(fused.items(), key=lambda kv: -kv[1])[: top_k * 3]
     results = []
@@ -270,7 +327,10 @@ def hybrid_search(query: str, top_k: int | None = None,
         entry["similarity"] = round(similarity, 3)
         results.append(entry)
     results.sort(key=lambda r: -r["score"])
-    results = results[:top_k]
+    # Cross-encoder reranking, when enabled, replaces the heuristic order
+    # over the shortlist. It reorders only -- membership was already decided.
+    from .rerank import rerank
+    results = rerank(query, results)[:top_k]
 
     # The judge runs last, on the ranked shortlist only. Asking it about
     # every candidate would multiply cost by the corpus; asking it about the

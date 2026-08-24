@@ -66,13 +66,13 @@ is marked plainly.
 |---|---|---|
 | RAG indexing over **approved** knowledge only | **Built** — the index is built from validated state, never from transcripts | `retrieval.py` |
 | Embeddings | **Built** — pluggable backends; `sentence-transformers/all-MiniLM-L6-v2` runs locally, hashed remains the dependency-free default | `src/cip/embedding.py`, `docs/RETRIEVAL.md` |
-| Vector index | **Partial** — in-process, not Pinecone/pgvector | `retrieval.py` |
-| Lexical / BM25 index | **Partial** — in-process, not OpenSearch | `retrieval.py` |
+| Vector index | **Built** — FAISS `IndexFlatIP` over normalised vectors; exact at this size, IVF/HNSW at scale without changing the call site | `src/cip/index_backends.py` |
+| Lexical / BM25 index | **Built** — inverted index with postings, so a query visits only documents containing its terms rather than scanning the corpus | `src/cip/index_backends.py` |
 | Query router: structured → SQL, document → RAG | **Built** | `agent.py` |
 | Structured retrieval | **Built** — SQL over canonical state | `agent.py`, `tools.py` |
 | Hybrid retrieval: metadata filter + vector + BM25 + RRF | **Built** | `retrieval.hybrid_search` |
-| Reranker | **Partial** — heuristic overlap + status prior, not a cross-encoder | `retrieval._rerank_entry` |
-| Hybrid retrieval **benefit** | **Partial** — a real encoder beats BM25 (0.788 vs 0.758, mixed 0.833 vs 0.667), but hybrid adds nothing over dense alone; the lexical-identifier claim is still unproven on a 10-doc corpus | `docs/RETRIEVAL.md` |
+| Reranker | **Built** — cross-encoder (`ms-marco-MiniLM-L-6-v2`); MRR 0.682 → 0.773, nDCG 0.669 → 0.736, recall unchanged since it only reorders | `src/cip/rerank.py` |
+| Hybrid retrieval **benefit** | **Built** — proven on a near-miss identifier corpus: dense 0.667, BM25 1.000, equal-weight fusion 0.833, identifier-weighted fusion 1.000 | `src/cip/eval/identifier_eval.py`, `docs/RETRIEVAL.md` |
 | Grounded agent: citations, abstain on weak evidence | **Built** — both routes abstain rather than fill from memory | `agent.py` |
 
 ## Observability

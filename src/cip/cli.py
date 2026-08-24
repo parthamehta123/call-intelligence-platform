@@ -117,6 +117,12 @@ def _cmd_eval_audio(args) -> int:
     return 0
 
 
+def _cmd_eval_identifiers(args) -> int:
+    from .eval.identifier_eval import report
+    print(report())
+    return 0
+
+
 def _cmd_audit(args) -> int:
     from .security.audit import audit
     for record in audit.tail(args.limit, event=args.event):
@@ -214,6 +220,10 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("eval-audio", help="ASR / language ID / diarization accuracy")
     p.set_defaults(func=_cmd_eval_audio)
+
+    p = sub.add_parser("eval-identifiers",
+                       help="does lexical matching beat dense on near-miss versions?")
+    p.set_defaults(func=_cmd_eval_identifiers)
 
     p = sub.add_parser("demo", help="end-to-end walkthrough")
     p.add_argument("--calls", type=int, default=4000)
