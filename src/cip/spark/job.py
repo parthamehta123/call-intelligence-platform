@@ -117,8 +117,17 @@ def run(day: str, *, raw_path: str | None = None, config=SPARK, spark=None,
 
     # --- extraction --------------------------------------------------------
     observations_table = _table("observations", config=config)
-    extracted = silver.select(*[f.name for f in SEGMENT.fields]) \
-                      .mapInPandas(route_and_extract_batches, schema=OBSERVATION)
+    to_extract = silver.select(*[f.name for f in SEGMENT.fields])
+
+    # A global cap, applied before the work fans out. CONFIG.extract_limit
+    # alone is per-partition: 50 across 200 partitions is up to 10,000 model
+    # calls, not 50, which is the opposite of what a spend cap is for.
+    if CONFIG.extract_limit:
+        to_extract = to_extract.limit(CONFIG.extract_limit)
+        print(f"[cip] extract_limit={CONFIG.extract_limit} segments "
+              f"(a capped run -- published counts will be partial)")
+
+    extracted = to_extract.mapInPandas(route_and_extract_batches, schema=OBSERVATION)
     publish.write_day_partition(
         extracted.withColumn("run_id", F.lit(run_id)).withColumn("day", F.lit(day)),
         table=observations_table, day=day, config=config)
@@ -141,6 +150,7 @@ def run(day: str, *, raw_path: str | None = None, config=SPARK, spark=None,
 
     stats = {
         "run_id": run_id,
+        "extract_limit": CONFIG.extract_limit,
         "day": day,
         "calls": call_count,
         # Post-dedupe: what silver actually holds. There is deliberately no

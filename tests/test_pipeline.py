@@ -176,3 +176,45 @@ def test_a_second_topic_starts_a_new_segment(monkeypatch):
                  "My invoice shows the wrong billing address.",
                  product_hint="X100")
     assert len(preprocess.segment_call(call)) == 2
+
+
+def test_spend_cap_applies_only_to_metered_backends(monkeypatch):
+    """The rules extractor costs nothing, so capping it would just discard
+    data for no benefit."""
+    from cip.config import CONFIG
+    from cip.pipeline.extract import extract
+
+    monkeypatch.setattr(CONFIG, "extract_limit", 2)
+    monkeypatch.setattr(CONFIG, "extractor", "rules")
+
+    segments = []
+    for i in range(6):
+        call = _call(f"The X100 VPN keeps disconnecting on firmware 7.2, case {i}.",
+                     call_id=f"C{i}", customer=f"U{i}", product_hint="X100")
+        segments.extend(route(segment_call(call)))
+    assert len(list(extract(segments))) > 2
+
+
+def test_spend_cap_bounds_a_metered_backend(monkeypatch):
+    """50 must mean 50 calls, not 50 per partition."""
+    from cip.config import CONFIG
+    from cip.pipeline import extract as extract_module
+
+    calls = []
+
+    def fake(segment):
+        calls.append(segment.segment_id)
+        return None
+
+    monkeypatch.setattr(CONFIG, "extract_limit", 2)
+    monkeypatch.setattr(CONFIG, "extractor", "claude")
+    monkeypatch.setattr(extract_module, "extract_claude", fake)
+
+    segments = []
+    for i in range(6):
+        call = _call(f"The X100 VPN keeps disconnecting on firmware 7.2, case {i}.",
+                     call_id=f"C{i}", customer=f"U{i}", product_hint="X100")
+        segments.extend(route(segment_call(call)))
+
+    list(extract_module.extract(segments))
+    assert len(calls) == 2, f"cap ignored: {len(calls)} model calls made"

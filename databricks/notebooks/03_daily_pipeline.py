@@ -21,6 +21,7 @@ dbutils.widgets.text("schema", "call_intelligence")
 dbutils.widgets.text("volume", "raw_calls")
 dbutils.widgets.text("extractor", "rules")
 dbutils.widgets.text("secret_scope", "cip")
+dbutils.widgets.text("extract_limit", "0")
 
 catalog = dbutils.widgets.get("catalog")
 schema = dbutils.widgets.get("schema")
@@ -64,7 +65,9 @@ if extractor == "claude":
             f"would produce a full set of numbers from the wrong backend."
         ) from exc
 os.environ["CIP_EXTRACTOR"] = extractor
-print("extractor backend:", extractor)
+limit = dbutils.widgets.get("extract_limit").strip() or "0"
+os.environ["CIP_EXTRACT_LIMIT"] = limit
+print("extractor backend:", extractor, "| extract_limit:", limit)
 
 from cip.config import SPARK
 SPARK.catalog, SPARK.schema, SPARK.volume = catalog, schema, volume
@@ -72,6 +75,7 @@ SPARK.table_format = "delta"
 
 from cip.config import CONFIG
 CONFIG.extractor = extractor
+CONFIG.extract_limit = int(limit)
 
 raw_path = f"/Volumes/{catalog}/{schema}/{volume}"
 

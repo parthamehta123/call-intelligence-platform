@@ -32,6 +32,11 @@ variables:
   secret_scope:
     description: Databricks secret scope holding anthropic_api_key.
     default: cip
+  extract_limit:
+    description: >-
+      Global cap on segments sent to a metered model, applied before the
+      work fans out. 0 means no cap. Use a small value for a first paid run.
+    default: 0
   run_as_service_principal:
     description: >-
       Application ID (a UUID) of the service principal that owns production
@@ -107,6 +112,7 @@ resources:
               volume: ${var.volume}
               extractor: ${var.extractor}
               secret_scope: ${var.secret_scope}
+              extract_limit: ${var.extract_limit}
 
         - task_key: security_checks
           depends_on:
@@ -155,6 +161,7 @@ targets:
                   volume: ${var.volume}
                   extractor: ${var.extractor}
                   secret_scope: ${var.secret_scope}
+                  extract_limit: ${var.extract_limit}
 
   prod:
     mode: production

@@ -81,9 +81,13 @@ class Config:
     # sequential loop leaves a Spark task waiting on the network for the
     # length of its whole batch.
     extract_concurrency: int = int(os.environ.get("CIP_EXTRACT_CONCURRENCY", "8"))
-    # Hard cap on segments sent to a paid model, per partition. 0 means no
-    # cap. Exists so a first run against a metered API cannot cost more than
-    # intended because a threshold moved.
+    # Hard cap on segments sent to a paid model. 0 means no cap.
+    #
+    # The Spark job applies it globally, with `.limit()` before the work
+    # fans out. In the single-process path it is per-batch, which is the
+    # same thing. Applying it only inside the partition function would make
+    # 50 mean "50 per partition" -- up to 10,000 calls across 200 of them,
+    # the opposite of a spend cap.
     extract_limit: int = int(os.environ.get("CIP_EXTRACT_LIMIT", "0"))
     claude_model: str = os.environ.get("CIP_MODEL", "claude-opus-5")
 
