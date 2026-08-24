@@ -102,3 +102,40 @@ def test_claude_backend_requests_a_constrained_verdict():
     assert schema["properties"]["answers_the_question"]["type"] == "boolean"
     assert schema["additionalProperties"] is False
     assert "answers_the_question" in schema["required"]
+
+
+def test_a_dead_judge_is_not_reported_as_a_measurement(monkeypatch, capsys):
+    """Fail-open makes a broken backend indistinguishable from a working one.
+
+    It has happened twice for real -- a stale hub token, then an unfunded
+    API key -- and both times the eval printed a clean table that was really
+    the un-judged baseline. The report must say so.
+    """
+    from cip.eval.retrieval_eval import report
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("credit balance is too low")
+
+    monkeypatch.setattr(CONFIG, "judge", "claude")
+    monkeypatch.setattr(judge_module, "_cached_verdict", explode)
+
+    text = report()
+    assert "NOT A JUDGED RESULT" in text
+    assert "un-judged baseline" in text
+    assert judge_module.STATS["failures"] > 0
+
+
+def test_repeated_failures_are_counted_not_reprinted(monkeypatch, capsys):
+    """70 identical stack traces bury the summary that matters."""
+    def explode(*args, **kwargs):
+        raise RuntimeError("backend down")
+
+    monkeypatch.setattr(CONFIG, "judge", "stub")
+    monkeypatch.setattr(judge_module, "_cached_verdict", explode)
+    judge_module.reset_stats()
+
+    for _ in range(5):
+        judge_module.judge("q", "d")
+
+    assert judge_module.STATS["failures"] == 5
+    assert capsys.readouterr().out.count("backend down") == 1

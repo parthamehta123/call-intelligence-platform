@@ -32,6 +32,19 @@ from functools import lru_cache
 
 from .config import CONFIG
 
+# Fail-open is the right behaviour -- a model outage must degrade to
+# un-judged retrieval, not to a system that answers nothing. But it means a
+# completely dead backend still returns a full set of results, and an eval
+# will then print a clean table that is really the un-judged baseline.
+# That has now happened twice: a stale hub token, and an unfunded API key.
+# Callers can read these counters to refuse to report such a run as a
+# measurement.
+STATS = {"calls": 0, "failures": 0}
+
+
+def reset_stats() -> None:
+    STATS.update(calls=0, failures=0)
+
 # Sentences the knowledge base appends for provenance. They are bookkeeping,
 # not topical content, and they measurably swing a small judge: the same
 # query against the same document flipped from a correct "no" to a wrong
@@ -78,13 +91,17 @@ def judge(query: str, document: str) -> bool:
     """True if the document answers the query. Fails open."""
     if CONFIG.judge == "none":
         return True
+    STATS["calls"] += 1
     try:
         return _cached_verdict(CONFIG.judge, CONFIG.judge_model, query, document[:2000])
     except Exception as exc:  # pragma: no cover - depends on backend availability
         # Failing closed would turn a transient model error into a system
         # that answers nothing. Degrade to un-judged retrieval instead, and
         # say so rather than hiding it.
-        print(f"[cip.judge] {type(exc).__name__}: {exc}; keeping document unjudged")
+        STATS["failures"] += 1
+        if STATS["failures"] == 1:
+            print(f"[cip.judge] {type(exc).__name__}: {exc}; keeping document "
+                  f"unjudged (further failures counted, not repeated)")
         return True
 
 

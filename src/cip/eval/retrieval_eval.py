@@ -24,7 +24,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..config import ROOT
+from ..config import CONFIG, ROOT
 from ..retrieval import hybrid_search
 
 CASES = ROOT / "eval" / "retrieval_cases.jsonl"
@@ -132,6 +132,9 @@ def abstention(cases: list[RetrievalCase], k: int = 5) -> tuple[int, int, list[s
 
 
 def report(k: int = 5) -> str:
+    from ..judge import STATS as JUDGE_STATS, reset_stats
+
+    reset_stats()
     cases = load_cases()
     lines = [f"=== retrieval quality ({len(cases)} labelled queries, "
              f"{len([c for c in cases if c.relevant])} answerable) ===", ""]
@@ -158,4 +161,21 @@ def report(k: int = 5) -> str:
     held, total_unanswerable, leaked = abstention(cases, k)
     lines += ["", f"abstention on unanswerable queries: {held}/{total_unanswerable}"]
     lines += [f"    leaked: {l}" for l in leaked]
+
+    # A dead judge fails open on every document and yields exactly the
+    # un-judged numbers. Reporting that as a judged run is how a failed
+    # experiment gets mistaken for a negative result.
+    calls, failures = JUDGE_STATS["calls"], JUDGE_STATS["failures"]
+    if CONFIG.judge != "none":
+        lines += ["", f"judge: {CONFIG.judge} ({CONFIG.judge_model})",
+                  f"  verdicts requested {calls}, failed {failures}"]
+        if failures:
+            lines += [
+                "",
+                "  !! THESE NUMBERS ARE NOT A JUDGED RESULT !!",
+                f"  {failures}/{calls} judge calls failed and fell back to "
+                f"keeping the document.",
+                "  The figures above are the un-judged baseline. Fix the "
+                "backend and re-run before drawing any conclusion.",
+            ]
     return "\n".join(lines)
