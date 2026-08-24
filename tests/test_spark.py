@@ -333,3 +333,31 @@ def test_cross_module_spark_calls_are_keyword_only():
                 f"{len(positional)} positional args ({[p.name for p in positional]}); "
                 f"only the first {allowed} may be positional")
     assert not offenders, "\n".join(offenders)
+
+
+def test_ddl_adds_columns_to_an_existing_table(spark):
+    """Schema evolution, not just creation.
+
+    Adding two diarization fields broke the deployed job: the table already
+    existed, CREATE TABLE IF NOT EXISTS did nothing, and the next read
+    failed with UNRESOLVED_COLUMN: customer_turns.
+    """
+    from cip.spark.ddl import DDL, _declared_columns, evolve
+
+    spark.sql("CREATE DATABASE IF NOT EXISTS cip_evolve")
+    spark.sql("DROP TABLE IF EXISTS cip_evolve.segments")
+    # An older revision of the table: no diarization columns.
+    spark.sql("""CREATE TABLE cip_evolve.segments (
+                     segment_id STRING, call_id STRING, text STRING
+                 ) USING parquet""")
+
+    ddl_sql = DDL["segments"].format(t="cip_evolve.segments", fmt="parquet")
+    added = evolve(spark, "cip_evolve.segments", ddl_sql)
+
+    assert "customer_turns" in added and "attribution_confidence" in added
+    columns = set(spark.table("cip_evolve.segments").columns)
+    assert {"customer_turns", "attribution_confidence", "content_hash"} <= columns
+    # Partition columns are declared separately and must not be re-added.
+    assert "day" not in [n for n, _ in _declared_columns(ddl_sql)]
+    # Idempotent.
+    assert evolve(spark, "cip_evolve.segments", ddl_sql) == []

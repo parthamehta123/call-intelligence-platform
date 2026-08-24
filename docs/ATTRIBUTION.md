@@ -96,6 +96,20 @@ errors correlate with low confidence, every one of them lands at
 confidence 0.37–0.43 against 0.83 for a clean customer report, and none
 count toward corroboration.
 
+## A third bug: adding fields broke the deployed job
+
+The two new columns deployed fine and the job failed on the next read with
+`UNRESOLVED_COLUMN: customer_turns`. `CREATE TABLE IF NOT EXISTS` is not
+schema evolution -- it is a no-op against an existing table, so the columns
+were never added to Unity Catalog.
+
+`ddl.evolve()` now diffs declared columns against the live table and issues
+`ALTER TABLE ... ADD COLUMNS` for whatever is missing, as part of setup.
+Additive only: dropping or retyping a column is destructive and belongs in
+a reviewed migration, not a job that runs nightly. Adding fields is the
+common case -- this change alone added two -- so it should not require
+someone to remember.
+
 ## What this is not
 
 Real diarization is **not implemented** — there is no audio, and speaker

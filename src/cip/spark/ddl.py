@@ -159,6 +159,61 @@ OPTIMIZE = {
 }
 
 
+def _declared_columns(ddl_sql: str) -> list[tuple[str, str]]:
+    """(name, type) pairs from a CREATE TABLE body, ignoring comments."""
+    body = ddl_sql[ddl_sql.index("(") + 1:ddl_sql.rindex(")")]
+    partition_cols: set[str] = set()
+    if "PARTITIONED BY" in ddl_sql:
+        partition_cols = {
+            c.strip().lower()
+            for c in ddl_sql.split("PARTITIONED BY", 1)[1].strip().strip("()").split(",")}
+
+    columns: list[tuple[str, str]] = []
+    depth = 0
+    current = ""
+    for char in body:
+        if char == "<":
+            depth += 1
+        elif char == ">":
+            depth -= 1
+        if char == "," and depth == 0:
+            columns.append(current)
+            current = ""
+        else:
+            current += char
+    columns.append(current)
+
+    out: list[tuple[str, str]] = []
+    for raw in columns:
+        line = " ".join(l.split("--")[0].strip() for l in raw.splitlines()).strip()
+        if not line:
+            continue
+        name, _, col_type = line.partition(" ")
+        col_type = col_type.replace("NOT NULL", "").strip()
+        if name and col_type and name.lower() not in partition_cols:
+            out.append((name, col_type))
+    return out
+
+
+def evolve(spark, table: str, ddl_sql: str) -> list[str]:
+    """Add columns the table is missing.
+
+    `CREATE TABLE IF NOT EXISTS` is not schema evolution: it is a no-op on
+    an existing table, so a new field silently never appears and the next
+    read fails with UNRESOLVED_COLUMN. Adding fields is the common case in
+    a pipeline like this -- diarization added two -- so migration has to be
+    part of setup rather than a manual step someone remembers.
+
+    Additive only. Dropping or retyping a column is destructive and belongs
+    in a reviewed migration, not in a job that runs nightly.
+    """
+    existing = {f.name.lower() for f in spark.table(table).schema.fields}
+    missing = [(n, t) for n, t in _declared_columns(ddl_sql) if n.lower() not in existing]
+    for name, col_type in missing:
+        spark.sql(f"ALTER TABLE {table} ADD COLUMNS ({name} {col_type})")
+    return [n for n, _ in missing]
+
+
 def create_all(spark, *, config=SPARK) -> list[str]:
     created: list[str] = []
     if config.table_format == "delta":
@@ -172,6 +227,9 @@ def create_all(spark, *, config=SPARK) -> list[str]:
         table = config.table(name) if config.table_format == "delta" \
             else f"{config.schema}.{name}"
         spark.sql(ddl.format(t=table, fmt=config.table_format))
+        added = evolve(spark, table, ddl.format(t=table, fmt=config.table_format))
+        if added:
+            print(f"[cip.ddl] {table}: added columns {added}")
         if config.table_format == "delta" and name in OPTIMIZE:
             spark.sql(OPTIMIZE[name].format(t=table))
         created.append(table)
