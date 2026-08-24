@@ -52,21 +52,16 @@ def tokenize(text: str) -> list[str]:
             if t not in _STOP and len(t) > 1]
 
 
-def _slot(token: str) -> int:
-    # Never `hash()`: Python salts string hashing per process, so a vector
-    # written today would land in different slots tomorrow and the index
-    # would rot silently rather than fail loudly.
-    return int.from_bytes(hashlib.blake2b(token.encode(), digest_size=4).digest(), "big") % DIM
-
-
 def embed(text: str) -> list[float]:
-    """Hashed bag-of-words, L2-normalised. Placeholder for a real encoder."""
-    vector = [0.0] * DIM
-    for token, count in Counter(tokenize(text)).items():
-        slot = _slot(token)
-        vector[slot] += 1.0 + math.log(count)
-    norm = math.sqrt(sum(v * v for v in vector)) or 1.0
-    return [v / norm for v in vector]
+    """Single-text convenience. Prefer `embed_many` -- a real encoder is far
+    faster per item in a batch, and indexing embeds whole document sets."""
+    return embed_many([text])[0]
+
+
+def embed_many(texts: list[str]) -> list[list[float]]:
+    from .embedding import embed_batch
+
+    return embed_batch(texts, tokenize)
 
 
 def cosine(a: list[float], b: list[float]) -> float:
@@ -98,14 +93,18 @@ class Index:
         """Re-embed only what changed. Re-indexing 10 TB nightly is the
         mistake that makes these systems unaffordable; the KB flags the
         handful of documents that actually moved."""
-        for row in rows:
-            text = f"{row['title']}\n{row['body']}"
+        # Encoded as one batch. Per-document calls are fine for a hashed
+        # bag-of-words and badly wasteful for a real model.
+        texts = [f"{row['title']}\n{row['body']}" for row in rows]
+        vectors = embed_many(texts) if texts else []
+
+        for row, text, vector in zip(rows, texts, vectors):
             if row["doc_id"] in self.docs:
                 self._remove_stats(self.docs[row["doc_id"]])
             doc = Doc(
                 doc_id=row["doc_id"], product_id=row["product_id"], title=row["title"],
                 body=row["body"], source=row["source"], status=row["status"],
-                tokens=tokenize(text), vector=embed(text),
+                tokens=tokenize(text), vector=vector,
             )
             self.docs[doc.doc_id] = doc
             self.df.update(set(doc.tokens))
@@ -156,7 +155,10 @@ class Index:
         # directory had no effect and writes went to the real index.
         path = Path(path or INDEX_PATH)
         path.parent.mkdir(parents=True, exist_ok=True)
+        from .embedding import signature
+
         path.write_text(json.dumps({
+            "embedding": signature(),
             "docs": {k: v.__dict__ for k, v in self.docs.items()},
             "df": dict(self.df),
             "avg_len": self.avg_len,
@@ -168,7 +170,15 @@ class Index:
         index = Index()
         if not path.exists():
             return index
+        from .embedding import signature
+
         raw = json.loads(path.read_text())
+        # Vectors from one encoder compared against queries from another
+        # produce plausible, meaningless rankings and no error at all. An
+        # index built in a different vector space is treated as absent, so
+        # the next refresh rebuilds it.
+        if raw.get("embedding") != signature():
+            return index
         index.docs = {k: Doc(**v) for k, v in raw["docs"].items()}
         index.df = Counter(raw["df"])
         index.avg_len = raw["avg_len"]
@@ -176,9 +186,17 @@ class Index:
 
 
 def refresh_index() -> int:
-    """Pull CDC-flagged documents out of the KB and re-embed just those."""
+    """Pull CDC-flagged documents out of the KB and re-embed just those.
+
+    Changing the embedding backend invalidates the whole index, so the
+    incremental path is skipped and everything is re-encoded once.
+    """
     index = Index.load()
     dirty = kb.dirty_documents()
+    if not index.docs:
+        # Either a first build or a vector-space change; either way the
+        # dirty flags are not enough on their own.
+        dirty = kb.query("SELECT * FROM documents")
     updated = index.upsert(dirty)
     index.save()
     kb.mark_clean(updated)
@@ -218,6 +236,7 @@ def hybrid_search(query: str, top_k: int | None = None,
 
     rankings = {"hybrid": (lexical, dense),
                 "bm25": (lexical,), "dense": (dense,)}[mode]
+    dense_scores = dict(dense) if mode in ("hybrid", "dense") else {}
 
     # Reciprocal rank fusion: rank-based, so the two score scales never
     # need calibrating against each other.
@@ -231,16 +250,24 @@ def hybrid_search(query: str, top_k: int | None = None,
     for doc_id, score in ranked:
         doc = index.docs[doc_id]
         coverage = topical_coverage(query, doc, index)
-        # Abstain rather than return a near-miss. A score floor cannot do
-        # this job: measured, unanswerable queries scored 0.568 and 0.678
-        # while genuine answers scored as low as 0.542, so the
-        # distributions overlap and any cutoff loses real answers. Topical
-        # coverage separates them because it ignores the product name that
-        # both share.
-        if coverage <= 0.0:
+        similarity = dense_scores.get(doc_id, 0.0)
+
+        # Admit on lexical coverage OR semantic similarity.
+        #
+        # Coverage alone was a lexical gate bolted onto semantic retrieval,
+        # and it cancelled the encoder: asked for "a way to download
+        # everything at once", the real model ranked the bulk-export
+        # document first and the gate dropped it, because it shares no
+        # literal term with "Bulk CSV export requested". Every document
+        # failed, and the ablation reported all three legs identical.
+        #
+        # Coverage still carries the hashed backend, where similarity is
+        # only lexical overlap wearing a different metric.
+        if coverage <= 0.0 and similarity < CONFIG.dense_floor:
             continue
         entry = _rerank_entry(doc, query, score)
         entry["coverage"] = round(coverage, 3)
+        entry["similarity"] = round(similarity, 3)
         results.append(entry)
     results.sort(key=lambda r: -r["score"])
     return results[:top_k]

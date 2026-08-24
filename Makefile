@@ -1,5 +1,5 @@
 .PHONY: demo run generate status redteam test ask clean wheel \
-	eval-router eval-retrieval eval-attribution \
+	eval-router eval-retrieval eval-retrieval-real eval-attribution \
 	spark-setup spark-test spark-run bundle-validate bundle-deploy bundle-run
 
 PY          := PYTHONPATH=src python3
@@ -34,6 +34,13 @@ eval-router:    ## measure the funnel: precision/recall/threshold sweep
 
 eval-retrieval: ## Recall@K / MRR / nDCG, leg ablation, routing, abstention
 	$(PY) -m cip eval-retrieval
+
+# Same eval against a real local encoder. HF_HUB_OFFLINE avoids a network
+# round-trip for an already-cached model.
+eval-retrieval-real:
+	HF_HUB_OFFLINE=1 CIP_EMBEDDER=sentence-transformers $(PY) -c \
+	  "from cip import kb, retrieval; conn=kb.connect().__enter__(); conn.execute('UPDATE documents SET dirty=1'); conn.commit(); retrieval.refresh_index()"
+	HF_HUB_OFFLINE=1 CIP_EMBEDDER=sentence-transformers $(PY) -m cip eval-retrieval
 
 eval-attribution: ## did extracted evidence really come from the customer?
 	$(PY) -m cip eval-attribution

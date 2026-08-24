@@ -5,7 +5,7 @@ in this repo. Every "Built" below was checked against the code, not
 remembered. Anything a reader could reasonably assume works and does not
 is marked plainly.
 
-**Built 26 · Partial 9 · Not built 5**
+**Built 27 · Partial 9 · Not built 5**
 
 ## Ingestion and preprocessing
 
@@ -65,14 +65,14 @@ is marked plainly.
 | Diagram box | Status | Where |
 |---|---|---|
 | RAG indexing over **approved** knowledge only | **Built** — the index is built from validated state, never from transcripts | `retrieval.py` |
-| Embeddings | **Partial** — hashed bag-of-words stand-in; swap `embed()` for a real encoder | `retrieval.py` |
+| Embeddings | **Built** — pluggable backends; `sentence-transformers/all-MiniLM-L6-v2` runs locally, hashed remains the dependency-free default | `src/cip/embedding.py`, `docs/RETRIEVAL.md` |
 | Vector index | **Partial** — in-process, not Pinecone/pgvector | `retrieval.py` |
 | Lexical / BM25 index | **Partial** — in-process, not OpenSearch | `retrieval.py` |
 | Query router: structured → SQL, document → RAG | **Built** | `agent.py` |
 | Structured retrieval | **Built** — SQL over canonical state | `agent.py`, `tools.py` |
 | Hybrid retrieval: metadata filter + vector + BM25 + RRF | **Built** | `retrieval.hybrid_search` |
 | Reranker | **Partial** — heuristic overlap + status prior, not a cross-encoder | `retrieval._rerank_entry` |
-| Hybrid retrieval **benefit** | **Unproven** — ablation wired up and reports all three legs identical, because `embed()` is a hashed bag-of-words | `docs/RETRIEVAL.md` |
+| Hybrid retrieval **benefit** | **Partial** — a real encoder beats BM25 (0.788 vs 0.758, mixed 0.833 vs 0.667), but hybrid adds nothing over dense alone; the lexical-identifier claim is still unproven on a 10-doc corpus | `docs/RETRIEVAL.md` |
 | Grounded agent: citations, abstain on weak evidence | **Built** — both routes abstain rather than fill from memory | `agent.py` |
 
 ## Observability
@@ -92,12 +92,12 @@ is marked plainly.
 
 Ranked by how much they matter to the architecture's claims:
 
-1. **A real embedding model.** Retrieval is now measured
-   (`docs/RETRIEVAL.md`) and the ablation reports hybrid, BM25 and dense as
-   *identical* — the hashed bag-of-words `embed()` cannot disagree with
-   BM25, so the repeatedly-stated hybrid benefit has no supporting
-   evidence. This is now the highest-value change: it converts a claim into
-   something measurable. The *router* is separately measured
+1. **Abstention.** Three mechanisms were measured and none separates
+   answerable from unanswerable questions: rerank score, semantic
+   similarity, and a cross-encoder all overlap, because the unanswerable
+   queries are topically adjacent and the missing piece is a *claim-level*
+   judgement. An LLM judge over retrieved context is the honest next step
+   (`docs/RETRIEVAL.md`). The *router* is separately measured
    (`docs/EVAL.md`): precision 0.977 / recall 1.000 on 4,000 generated segments
    (a saturated set), 0.733 / 0.917 on 32 hand-written hard cases, with a
    CI floor.

@@ -41,6 +41,18 @@ class Config:
     conflict_ratio: float = 0.30         # minority share that triggers review
 
     # --- retrieval --------------------------------------------------------
+    # "hashed" keeps the demo dependency-free and the tests deterministic.
+    # "sentence-transformers" runs a real encoder locally -- the only way the
+    # hybrid-retrieval claim becomes testable, since a hashed bag-of-words
+    # cannot disagree with BM25.
+    embedder: str = os.environ.get("CIP_EMBEDDER", "hashed")
+    embed_model: str = os.environ.get("CIP_EMBED_MODEL",
+                                      "sentence-transformers/all-MiniLM-L6-v2")
+    # Semantic-similarity floor for admitting a document the lexical
+    # coverage check would reject. Only meaningful with a real encoder --
+    # with the hashed backend, similarity is lexical overlap in disguise and
+    # this floor is left effectively unused.
+    dense_floor: float = float(os.environ.get("CIP_DENSE_FLOOR", "0.35"))
     rrf_k: int = 60                      # reciprocal-rank-fusion constant
     top_k: int = 5
 

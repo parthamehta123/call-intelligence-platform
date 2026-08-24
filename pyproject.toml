@@ -11,6 +11,9 @@ dependencies = []                      # the demo runs on the standard library a
 
 [project.optional-dependencies]
 claude = ["anthropic>=0.40"]           # only needed for the Claude extraction backend
+# Real encoder. Optional by design: the hashed backend keeps the demo and the
+# test suite runnable with nothing installed.
+embeddings = ["sentence-transformers>=2.2"]
 dev = ["pytest>=8"]
 # Never install this extra into an environment that has databricks-connect:
 # both ship a `pyspark` package and pip leaves the loser's files orphaned.

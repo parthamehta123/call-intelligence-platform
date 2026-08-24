@@ -25,8 +25,28 @@ def seeded(tmp_path, monkeypatch):
 
 def test_embedding_slots_are_stable_across_processes():
     # A salted hash would make the persisted index silently useless.
-    assert retrieval._slot("firmware") == retrieval._slot("firmware")
+    from cip.embedding import _slot
+
+    assert _slot("firmware") == _slot("firmware")
     assert retrieval.embed("vpn drops") == retrieval.embed("vpn drops")
+
+
+def test_index_built_by_a_different_encoder_is_not_reused(tmp_path, monkeypatch):
+    """Vectors from one encoder scored against queries from another give
+    plausible, meaningless rankings and raise nothing. The signature makes
+    that failure structural instead of silent."""
+    from cip.config import CONFIG
+
+    index = retrieval.Index()
+    index.upsert([{"doc_id": "d1", "product_id": "X100", "title": "t",
+                   "body": "static routes lost", "source": "validated_issue",
+                   "status": "observed"}])
+    path = tmp_path / "index.json"
+    index.save(path)
+    assert retrieval.Index.load(path).docs, "same encoder should reload"
+
+    monkeypatch.setattr(CONFIG, "embedder", "sentence-transformers")
+    assert not retrieval.Index.load(path).docs, "different encoder must invalidate"
 
 
 def test_exact_identifier_query_finds_the_right_document(seeded):

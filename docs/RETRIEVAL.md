@@ -29,26 +29,33 @@ query routing (SQL vs RAG)          16/16
 abstention on unanswerable queries    1/2
 ```
 
-## The hybrid claim is not supported by this measurement
+## The hybrid claim, now measured with a real encoder
 
-The README has said, repeatedly, that hybrid retrieval beats either leg
-because product IDs and versions need exact lexical matching. **The
-ablation shows all three modes performing identically.**
+`CIP_EMBEDDER=sentence-transformers` runs `all-MiniLM-L6-v2` locally.
+Against the hashed backend:
 
-The reason is in the implementation, not the architecture: `embed()` is a
-hashed bag-of-words, so the "dense" leg is lexical matching with a
-different metric. It cannot disagree with BM25 about `7.2.13` because it
-represents `7.2.13` as the same token BM25 does. Fusing two legs that make
-the same mistakes buys nothing.
+| backend | mode | Recall@5 | mixed | paraphrase |
+|---|---|---|---|---|
+| hashed | hybrid / bm25 / dense | 0.758 / 0.758 / 0.758 | 0.667 | 0.600 |
+| MiniLM | hybrid / bm25 / dense | **0.788** / 0.758 / **0.788** | **0.833** / 0.667 | 0.600 |
 
-So the honest position: the ablation harness is correct and wired up, and
-it currently reports **no evidence for the hybrid claim**. That claim
-becomes testable the moment `embed()` is swapped for a real encoder — at
-which point `exact_identifier` is the row to watch, because that is where a
-real semantic model is expected to fail and BM25 to carry it.
+With the hashed backend all three legs are identical, and the reason is the
+implementation rather than the architecture: a hashed bag-of-words is
+lexical matching wearing a different metric, so it cannot disagree with
+BM25 about `7.2.13` — it represents that string as the same token.
 
-Until then, describing this system as "hybrid retrieval" is a description
-of the wiring, not a demonstrated benefit.
+With a real encoder the dense leg does something BM25 cannot. Asked for
+*"customers asking for a way to download everything at once"*, MiniLM ranks
+the bulk-export document **first**; BM25 returns four product overviews and
+never finds it. That is the benefit the architecture always claimed.
+
+**But the honest reading is narrower than "hybrid wins".** Hybrid and dense
+score identically (0.788); BM25 contributes nothing the dense leg misses on
+this query set, including on `exact_identifier`, where lexical matching was
+supposed to be decisive. On a 10-document corpus every version string is
+also a rare token, so BM25 has no chance to be uniquely right. The claim
+that identifiers *need* lexical matching remains **unproven** — it needs a
+corpus where near-miss identifiers actually collide.
 
 ## Two bugs the measurement found
 
@@ -64,10 +71,74 @@ at import. Redirecting the index to a temporary path had no effect and
 writes went to the real index — which is how the test that found it also
 clobbered the live one. Both `save` and `load` now resolve at call time.
 
-## Abstention
+## Abstention is unsolved, and three mechanisms failed to solve it
 
-Unanswerable questions must not draw a confident near-miss. A score
-threshold cannot do this job, and the measurement says so plainly:
+Unanswerable questions must not draw a confident near-miss. Three separate
+signals were measured, and **none separates answerable from unanswerable**
+on this corpus.
+
+**1 · Rerank score.** Overlapping:
+
+```
+answerable    0.542 – 1.228
+unanswerable  0.568, 0.678     <- above three genuine answers
+```
+
+**2 · Semantic similarity** (real encoder). Also overlapping:
+
+```
+answerable best-relevant   0.886 … 0.235
+unanswerable best-any      0.497, 0.570   <- above five genuine answers
+```
+
+**3 · Cross-encoder relevance** (`ms-marco-MiniLM-L-6-v2`, cached locally).
+Worse than either — genuine answers score far *below* the unanswerable
+ones:
+
+```
+answerable     8.460 … -11.179
+unanswerable  -0.483, -1.470
+```
+
+It is trained on MS MARCO web passages; these documents are terse generated
+summaries ("Bulk CSV export requested. Reported by 105 distinct
+customers…"), and the domain mismatch makes its ordering unusable here.
+
+**Why all three fail is the same reason.** The unanswerable queries are
+*topically adjacent*: the Pulse 7 is a real product and warranty is a real
+topic; the X100 is a real router and multicast is real networking. What
+makes them unanswerable is that the specific attribute asked about is
+absent from the corpus — a claim-level judgement, not a similarity one. No
+amount of threshold tuning turns a similarity score into that judgement.
+
+What would work: an LLM judge over the retrieved context, asked directly
+whether the document answers the question. That is available through the
+Claude backend and is the honest next step.
+
+### The tradeoff that is actually shipped
+
+`topical_coverage()` — do any of the query's *discriminating* terms appear
+in the document, ignoring product names and corpus-wide boilerplate — takes
+abstention from 0/2 to 1/2. But it is a lexical gate on top of semantic
+retrieval, and it cancels the encoder: it rejected the bulk-export document
+MiniLM had ranked first, because it shares no literal term with "download
+everything at once". With coverage as the only admission rule, the real
+encoder's advantage disappears entirely and all three legs return to 0.758.
+
+So admission is `coverage > 0 OR similarity >= CIP_DENSE_FLOOR` (default
+0.35), and the cost is stated rather than hidden:
+
+| setting | Recall@5 | abstention |
+|---|---|---|
+| `CIP_DENSE_FLOOR=0.35` (default) | 0.788 | 0/2 |
+| `CIP_DENSE_FLOOR=1.01` (coverage only) | 0.758 | 1/2 |
+
+Coverage only ever fixed one of the two cases, and it costs the entire
+semantic benefit — so the default keeps retrieval working and leaves
+abstention documented as unsolved rather than half-mitigated by something
+that cripples the encoder.
+
+### Historic note: why a score threshold was tried first
 
 ```
 answerable queries scored   0.542 – 1.228
