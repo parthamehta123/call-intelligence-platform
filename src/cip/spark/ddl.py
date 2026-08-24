@@ -155,7 +155,7 @@ OPTIMIZE = {
 }
 
 
-def create_all(spark, config=SPARK) -> list[str]:
+def create_all(spark, *, config=SPARK) -> list[str]:
     created: list[str] = []
     if config.table_format == "delta":
         # Unity Catalog: the catalog itself is created by an admin, not the

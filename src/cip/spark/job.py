@@ -44,7 +44,7 @@ def _run_id(day: str) -> str:
     return "R" + hashlib.sha1(f"{day}:{stamp}".encode()).hexdigest()[:10]
 
 
-def _table(name: str, config=SPARK) -> str:
+def _table(name: str, *, config=SPARK) -> str:
     return config.table(name) if config.table_format == "delta" \
         else f"{config.schema}.{name}"
 
@@ -66,11 +66,11 @@ def _to_candidates(rows) -> list[IssueCandidate]:
     ]
 
 
-def run(day: str, raw_path: str | None = None, config=SPARK, spark=None,
+def run(day: str, *, raw_path: str | None = None, config=SPARK, spark=None,
         write_seen: bool = True) -> dict:
     spark = spark or get_spark()
     run_id = _run_id(day)
-    ddl.create_all(spark, config)
+    ddl.create_all(spark, config=config)
     audit_mark = audit_sink.line_count()
     audit.write("spark_run_started", run_id=run_id, day=day,
                 extractor=CONFIG.extractor, table_format=config.table_format)
@@ -91,14 +91,14 @@ def run(day: str, raw_path: str | None = None, config=SPARK, spark=None,
     # Landing each stage as a Delta table is the medallion shape anyway, and
     # it buys replay: a bad extractor can be re-run from silver without
     # re-reading the raw day.
-    segments_table = _table("segments", config)
+    segments_table = _table("segments", config=config)
     raw_segments = calls.mapInPandas(preprocess_batches, schema=SEGMENT)
     deduped = dedupe_across_days(
-        dedupe_within_day(raw_segments), spark, day,
-        _table("seen_segments", config))
+        dedupe_within_day(raw_segments), spark=spark, day=day,
+        seen_table=_table("seen_segments", config=config))
     publish.write_day_partition(
         deduped.withColumn("run_id", F.lit(run_id)).withColumn("day", F.lit(day)),
-        segments_table, day=day, config=config)
+        table=segments_table, day=day, config=config)
 
     silver = spark.table(segments_table).filter(F.col("day") == day)
     segment_count, pii = silver.agg(
@@ -110,17 +110,17 @@ def run(day: str, raw_path: str | None = None, config=SPARK, spark=None,
     if call_count and not segment_count:
         raise RuntimeError(
             f"{call_count} calls produced 0 segments for {day}. Likely causes: "
-            f"every hash already recorded in {_table('seen_segments', config)} "
+            f"every hash already recorded in {_table('seen_segments', config=config)} "
             f"for an earlier day, or a preprocessing failure. Refusing to "
             f"report success on an empty run.")
 
     # --- extraction --------------------------------------------------------
-    observations_table = _table("observations", config)
+    observations_table = _table("observations", config=config)
     extracted = silver.select(*[f.name for f in SEGMENT.fields]) \
                       .mapInPandas(route_and_extract_batches, schema=OBSERVATION)
     publish.write_day_partition(
         extracted.withColumn("run_id", F.lit(run_id)).withColumn("day", F.lit(day)),
-        observations_table, day=day, config=config)
+        table=observations_table, day=day, config=config)
 
     observations = spark.table(observations_table).filter(F.col("day") == day)
     observation_count = observations.count()
@@ -131,11 +131,12 @@ def run(day: str, raw_path: str | None = None, config=SPARK, spark=None,
     candidates_df = aggregate_observations(observations)
     candidates = reconcile(_to_candidates(candidates_df.collect()))
     outcome = publish.publish_candidates(
-        spark, candidates, run_id=run_id, day=day, config=config)
+        spark, candidates=candidates, run_id=run_id, day=day, config=config)
 
     if write_seen:
         record_seen(silver, day=day, spark=spark,
-                    seen_table=_table("seen_segments", config))
+                    seen_table=_table("seen_segments", config=config),
+                    config=config)
 
     stats = {
         "run_id": run_id,
@@ -151,14 +152,14 @@ def run(day: str, raw_path: str | None = None, config=SPARK, spark=None,
         "candidates": len(candidates),
         **outcome,
     }
-    _write_metrics(spark, stats, config)
+    _write_metrics(spark, stats=stats, config=config)
     audit.write("spark_run_finished", **stats)
     stats["audit_rows"] = audit_sink.flush(
         spark, run_id=run_id, day=day, since=audit_mark, config=config)
     return stats
 
 
-def _write_metrics(spark, stats: dict, config=SPARK) -> None:
+def _write_metrics(spark, *, stats: dict, config=SPARK) -> None:
     now = datetime.now(timezone.utc)
     rows = [
         {"run_id": stats["run_id"], "day": stats["day"], "metric": key,
@@ -168,7 +169,7 @@ def _write_metrics(spark, stats: dict, config=SPARK) -> None:
     ]
     if not rows:
         return
-    table = _table("run_metrics", config)
+    table = _table("run_metrics", config=config)
     spark.createDataFrame(rows, schema=spark.table(table).schema) \
          .write.mode("append").insertInto(table)
 

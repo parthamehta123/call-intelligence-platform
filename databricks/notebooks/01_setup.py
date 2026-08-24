@@ -50,7 +50,7 @@ if catalog not in existing:
 spark.sql(f"CREATE SCHEMA IF NOT EXISTS {catalog}.{schema}")
 spark.sql(f"CREATE VOLUME IF NOT EXISTS {catalog}.{schema}.{volume}")
 
-created = ddl.create_all(spark, SPARK)
+created = ddl.create_all(spark, config=SPARK)
 print("\n".join(created))
 
 # COMMAND ----------

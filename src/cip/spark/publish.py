@@ -31,7 +31,7 @@ import re
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*){0,2}$")
 
 
-def write_day_partition(df, table: str, day: str, config) -> None:
+def write_day_partition(df, *, table: str, day: str, config) -> None:
     """Replace exactly one day's partition.
 
     A daily job is retried. Blind `append` makes a retry double every
@@ -159,8 +159,8 @@ def authorize(candidate: IssueCandidate) -> IssueCandidate | None:
     return validated if decision.allowed else None
 
 
-def publish_candidates(spark, candidates: Iterable[IssueCandidate], run_id: str,
-                       day: str, config=SPARK) -> dict:
+def publish_candidates(spark, *, candidates: Iterable[IssueCandidate],
+                       run_id: str, day: str, config=SPARK) -> dict:
     approved, to_review, rejected = [], [], []
     for candidate in candidates:
         validated = authorize(candidate)
@@ -223,7 +223,8 @@ def publish_candidates(spark, candidates: Iterable[IssueCandidate], run_id: str,
             "rejected": len(rejected)}
 
 
-def write_evidence(observations: DataFrame, run_id: str, day: str, config=SPARK) -> int:
+def write_evidence(observations: DataFrame, *, run_id: str, day: str,
+                   config=SPARK) -> int:
     """Append-only, partitioned by day so retention is a partition drop."""
     table = config.table("evidence") if config.table_format == "delta" \
         else f"{config.schema}.evidence"
@@ -236,5 +237,5 @@ def write_evidence(observations: DataFrame, run_id: str, day: str, config=SPARK)
             .withColumn("run_id", F.lit(run_id))
             .withColumn("day", F.lit(day)))
     count = rows.count()
-    write_day_partition(rows, table, day, config)
+    write_day_partition(rows, table=table, day=day, config=config)
     return count

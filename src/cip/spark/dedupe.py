@@ -19,7 +19,7 @@ def dedupe_within_day(segments: DataFrame) -> DataFrame:
     return segments.dropDuplicates(["customer_id", "content_hash"])
 
 
-def dedupe_across_days(segments: DataFrame, spark, day: str,
+def dedupe_across_days(segments: DataFrame, *, spark, day: str,
                        seen_table: str | None = None) -> DataFrame:
     """Anti-join against hashes seen on *earlier* days.
 
@@ -53,8 +53,8 @@ def dedupe_across_days(segments: DataFrame, spark, day: str,
     return segments.join(seen, ["customer_id", "content_hash"], "left_anti")
 
 
-def record_seen(segments: DataFrame, day: str, spark, seen_table: str | None = None,
-                config=SPARK) -> None:
+def record_seen(segments: DataFrame, *, day: str, spark,
+                seen_table: str | None = None, config=SPARK) -> None:
     seen_table = seen_table or config.table("seen_segments")
     from .publish import write_day_partition
 
@@ -63,4 +63,4 @@ def record_seen(segments: DataFrame, day: str, spark, seen_table: str | None = N
                     .withColumn("day", F.lit(day)))
     # `config`, not the module global: the caller's configuration is the one
     # that decides table format and catalog.
-    write_day_partition(rows, seen_table, day, config)
+    write_day_partition(rows, table=seen_table, day=day, config=config)

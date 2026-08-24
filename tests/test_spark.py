@@ -210,7 +210,7 @@ def test_day_partition_write_survives_column_reordering(spark, tmp_path):
 
     SPARK.table_format = "parquet"
     SPARK.schema = "cip_reorder"
-    ddl.create_all(spark, SPARK)
+    ddl.create_all(spark, config=SPARK)
 
     rows = [{
         "segment_id": "S1", "call_id": "C1", "customer_id": "U1",
@@ -230,7 +230,8 @@ def test_day_partition_write_survives_column_reordering(spark, tmp_path):
                            if c not in ("customer_id", "content_hash")])
     assert shuffled.columns != spark.table("cip_reorder.segments").columns
 
-    write_day_partition(shuffled, "cip_reorder.segments", day="2026-08-22", config=SPARK)
+    write_day_partition(shuffled, table="cip_reorder.segments",
+                        day="2026-08-22", config=SPARK)
 
     written = spark.table("cip_reorder.segments").collect()[0]
     assert written["speaker_mix"] == {"customer": 1}
@@ -255,7 +256,7 @@ def test_rerunning_the_same_day_is_not_eaten_by_cross_day_dedupe(spark, tmp_path
 
     SPARK.table_format = "parquet"
     SPARK.schema = "cip_rerun"
-    ddl.create_all(spark, SPARK)
+    ddl.create_all(spark, config=SPARK)
     seen_table = "cip_rerun.seen_segments"
     day = "2026-08-22"
 
@@ -269,15 +270,66 @@ def test_rerunning_the_same_day_is_not_eaten_by_cross_day_dedupe(spark, tmp_path
     } for i in range(5)]
     segments = spark.createDataFrame(rows, schema=SEGMENT)
 
-    first = dedupe_across_days(dedupe_within_day(segments), spark, day, seen_table)
+    first = dedupe_across_days(dedupe_within_day(segments), spark=spark, day=day,
+                               seen_table=seen_table)
     assert first.count() == 5
     record_seen(first, day=day, spark=spark, seen_table=seen_table, config=SPARK)
 
     # Same day again: must reprocess in full, because the partition-replacing
     # writers downstream assume a complete day.
-    second = dedupe_across_days(dedupe_within_day(segments), spark, day, seen_table)
+    second = dedupe_across_days(dedupe_within_day(segments), spark=spark, day=day,
+                                seen_table=seen_table)
     assert second.count() == 5, "re-running the same day must not self-cancel"
 
     # A genuinely later day must still be deduplicated against this one.
-    later = dedupe_across_days(dedupe_within_day(segments), spark, "2026-08-23", seen_table)
+    later = dedupe_across_days(dedupe_within_day(segments), spark=spark,
+                               day="2026-08-23", seen_table=seen_table)
     assert later.count() == 0, "cross-day dedupe must still work"
+
+
+def test_cross_module_spark_calls_are_keyword_only():
+    """Structural guard against the bug class that produced three defects.
+
+    Three separate failures had one shape: a function grew a parameter and a
+    caller kept passing positionally.
+
+      publish_candidates gained `day`  -> config bound to day, and Delta got
+                                          replaceWhere: day = 'SparkConfig(...)'
+      dedupe_across_days gained `day`  -> defaulted to None, the filter
+                                          switched off, and a re-run reported
+                                          SUCCESS having processed 0 segments
+      record_seen        gained `config` -> ignored, module global used instead
+
+    Tests caught none of them; the cluster did. Keyword-only arguments make
+    the mistake impossible to express, so this asserts the convention rather
+    than trusting review to enforce it.
+    """
+    import inspect
+
+    from cip.spark import audit_sink, ddl, dedupe, job, publish
+
+    # (function, how many leading positional "subject" params are allowed)
+    contracts = [
+        (publish.write_day_partition, 1),   # the DataFrame
+        (publish.write_evidence, 1),
+        (publish.publish_candidates, 1),    # the spark session
+        (dedupe.dedupe_across_days, 1),
+        (dedupe.record_seen, 1),
+        (ddl.create_all, 1),
+        (audit_sink.flush, 1),
+        (job.run, 1),                       # the day
+        (job._table, 1),
+        (job._write_metrics, 1),
+    ]
+
+    offenders = []
+    for fn, allowed in contracts:
+        params = list(inspect.signature(fn).parameters.values())
+        positional = [p for p in params
+                      if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+        if len(positional) > allowed:
+            offenders.append(
+                f"{fn.__module__}.{fn.__qualname__} accepts "
+                f"{len(positional)} positional args ({[p.name for p in positional]}); "
+                f"only the first {allowed} may be positional")
+    assert not offenders, "\n".join(offenders)

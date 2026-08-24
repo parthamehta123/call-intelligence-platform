@@ -36,7 +36,7 @@ def line_count() -> int:
     return sum(1 for line in path.read_text().splitlines() if line.strip())
 
 
-def flush(spark, run_id: str, day: str, since: int = 0, config=SPARK) -> int:
+def flush(spark, *, run_id: str, day: str, since: int = 0, config=SPARK) -> int:
     path = audit.path
     if not path.exists():
         return 0
