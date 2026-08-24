@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 
 from . import kb
@@ -174,7 +175,60 @@ def _cmd_demo(args) -> int:
         print(f"\nQ: {question}\n[route: {answer.route}]\n{answer.answer[:400]}")
 
     print("\n" + "=" * 72)
-    print("5. RED TEAM: untrusted transcripts vs the policy boundary")
+    print("5. KNOWLEDGE GRAPH: traversals the relational store answers badly")
+    print("=" * 72)
+    from .graph import render as render_graph
+    print(render_graph())
+
+    print("\n" + "=" * 72)
+    print("6. MEASUREMENT: every claim above has a number behind it")
+    print("=" * 72)
+    from .eval.attribution_eval import evaluate_attribution
+    from .eval.dataset import load_generated, load_hard_cases
+    from .eval.groundedness_eval import evaluate_groundedness
+    from .eval.router_eval import evaluate
+
+    for name, cases in (("generated", load_generated(day=args.day)),
+                        ("hard cases", load_hard_cases())):
+        m = evaluate(cases, CONFIG.relevance_threshold)
+        print(f"  router / {name:<11} precision {m.precision:.3f}  "
+              f"recall {m.recall:.4f}  kept {m.kept_fraction:.1%}")
+
+    from .eval.retrieval_eval import score_mode, load_cases as load_retrieval
+    r = score_mode(load_retrieval(), "hybrid", k=5)
+    print(f"  retrieval            Recall@5 {r.recall:.3f}  MRR {r.mrr:.3f}  "
+          f"nDCG@5 {r.ndcg:.3f}")
+
+    g = evaluate_groundedness()
+    print(f"  groundedness         {g.score:.3f} over {g.sentences} sentences, "
+          f"{g.fabricated_citations} citations not retrieved")
+
+    a = evaluate_attribution(day=args.day)
+    print(f"  attribution          {a.contamination_rate:.2%} of "
+          f"{a.observations} observations trace to a diarization flip "
+          f"({a.agent_claims_present} agent restatements in the day)")
+
+    if args.audio:
+        print("\n" + "=" * 72)
+        print("7. AUDIO INGESTION: real speech through ASR and diarization")
+        print("=" * 72)
+        # In a subprocess on purpose. FAISS and faster-whisper each link an
+        # OpenMP runtime, and loading both in one process aborts on macOS.
+        # KMP_DUPLICATE_LIB_OK would suppress it, but the OpenMP docs call
+        # that unsafe and warn it can silently produce incorrect results --
+        # not a trade worth making for a demo section. Separate processes
+        # have one runtime each.
+        import subprocess
+        import sys
+
+        completed = subprocess.run(
+            [sys.executable, "-m", "cip", "eval-audio"],
+            capture_output=True, text=True,
+            env={**os.environ, "PYTHONPATH": "src"})
+        print(completed.stdout.strip() or completed.stderr.strip()[-400:])
+
+    print("\n" + "=" * 72)
+    print(f"{8 if args.audio else 7}. RED TEAM: untrusted transcripts vs the policy boundary")
     print("=" * 72)
     return _cmd_redteam(args)
 
@@ -248,6 +302,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--calls", type=int, default=4000)
     p.add_argument("--day", **day)
     p.add_argument("--workers", type=int, default=1)
+    p.add_argument("--audio", action="store_true",
+                   help="include ASR + diarization (loads a speech model)")
     p.set_defaults(func=_cmd_demo)
 
     args = parser.parse_args(argv)

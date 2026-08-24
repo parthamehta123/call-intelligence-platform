@@ -11,7 +11,7 @@ TARGET      ?= dev
 
 # ---- single node -----------------------------------------------------------
 demo:            ## full end-to-end walkthrough
-	$(PY) -m cip demo --calls 4000
+	$(HF_ANON) $(PY) -m cip demo --calls 4000 --audio
 
 generate:
 	$(PY) -m cip generate --calls 4000
