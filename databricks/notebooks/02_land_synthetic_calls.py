@@ -52,10 +52,23 @@ dbutils.fs.mkdirs(target)
 # Only the call partitions and the manifest. `_LABELS.jsonl` is evaluation
 # ground truth, not raw data -- it stays out of the raw volume so nothing
 # downstream can read the router's own answer.
-for path in sorted(local_dir.glob("part-*.jsonl")) + [local_dir / "_MANIFEST.json"]:
-    shutil.copy(path, f"{target}/{path.name}")
+#
+# The layout is nested (region=/centre=/part-*.jsonl) and the relative paths
+# are preserved, because they are the partitioning: flattening them would
+# leave the job reading one directory instead of pruning by region.
+copied = 0
+for path in sorted(local_dir.rglob("part-*.jsonl")):
+    relative = path.relative_to(local_dir)
+    destination = f"{target}/{relative.parent}"
+    dbutils.fs.mkdirs(destination)
+    shutil.copy(path, f"{destination}/{path.name}")
+    copied += 1
+shutil.copy(local_dir / "_MANIFEST.json", f"{target}/_MANIFEST.json")
 
-display(dbutils.fs.ls(target))
+assert copied, f"no call partitions found under {local_dir}"
+print(f"copied {copied} partition files under {target}")
+
+display(dbutils.fs.ls(f"{target}"))
 
 # COMMAND ----------
 
