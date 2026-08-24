@@ -19,8 +19,8 @@ def dedupe_within_day(segments: DataFrame) -> DataFrame:
     return segments.dropDuplicates(["customer_id", "content_hash"])
 
 
-def dedupe_across_days(segments: DataFrame, spark, seen_table: str | None = None,
-                       day: str | None = None) -> DataFrame:
+def dedupe_across_days(segments: DataFrame, spark, day: str,
+                       seen_table: str | None = None) -> DataFrame:
     """Anti-join against hashes seen on *earlier* days.
 
     A call re-transcribed or re-ingested tomorrow is still the same call.
@@ -41,19 +41,26 @@ def dedupe_across_days(segments: DataFrame, spark, seen_table: str | None = None
     seen_table = seen_table or SPARK.table("seen_segments")
     if not spark.catalog.tableExists(seen_table):
         return segments
-    seen = spark.table(seen_table)
-    if day is not None:
-        seen = seen.filter(F.col("day") < day)
-    seen = seen.select("customer_id", "content_hash").distinct()
+    # `day` is positional and required on purpose. It was optional once, the
+    # caller omitted it, and the result was a job that reported SUCCESS
+    # having processed 4,000 calls into 0 segments -- every hash from the
+    # previous run of the same day matched. A parameter that silently
+    # disables a correctness filter should not have a default.
+    seen = (spark.table(seen_table)
+                 .filter(F.col("day") < day)
+                 .select("customer_id", "content_hash")
+                 .distinct())
     return segments.join(seen, ["customer_id", "content_hash"], "left_anti")
 
 
 def record_seen(segments: DataFrame, day: str, spark, seen_table: str | None = None,
                 config=SPARK) -> None:
-    seen_table = seen_table or SPARK.table("seen_segments")
+    seen_table = seen_table or config.table("seen_segments")
     from .publish import write_day_partition
 
     rows = (segments.select("customer_id", "content_hash")
                     .distinct()
                     .withColumn("day", F.lit(day)))
-    write_day_partition(rows, seen_table, day, SPARK)
+    # `config`, not the module global: the caller's configuration is the one
+    # that decides table format and catalog.
+    write_day_partition(rows, seen_table, day, config)

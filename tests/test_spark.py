@@ -236,3 +236,48 @@ def test_day_partition_write_survives_column_reordering(spark, tmp_path):
     assert written["speaker_mix"] == {"customer": 1}
     assert written["trust"] == "untrusted"
     assert written["segment_id"] == "S1"
+
+
+def test_rerunning_the_same_day_is_not_eaten_by_cross_day_dedupe(spark, tmp_path):
+    """The bug that shipped: a re-run reported SUCCESS with 0 segments.
+
+    The first run records every hash for the day. If cross-day dedupe does
+    not exclude the current day, the second run anti-joins the day against
+    itself, drops all of it, and the job reports success having processed
+    nothing -- indistinguishable from a genuinely quiet day.
+    """
+    from pyspark.sql import functions as F
+
+    from cip.config import SPARK
+    from cip.spark import ddl
+    from cip.spark.dedupe import dedupe_across_days, dedupe_within_day, record_seen
+    from cip.spark.schemas import SEGMENT
+
+    SPARK.table_format = "parquet"
+    SPARK.schema = "cip_rerun"
+    ddl.create_all(spark, SPARK)
+    seen_table = "cip_rerun.seen_segments"
+    day = "2026-08-22"
+
+    rows = [{
+        "segment_id": f"S{i}", "call_id": f"C{i}", "customer_id": f"U{i}",
+        "timestamp": "2026-08-22T10:00:00+00:00", "region": "US",
+        "text": "customer: the VPN keeps dropping", "speaker_mix": {"customer": 1},
+        "product_hint": "X100", "trust": "untrusted", "product_id": None,
+        "product_confidence": 0.0, "relevance": 0.0, "pii_redactions": 0,
+        "content_hash": f"hash{i}",
+    } for i in range(5)]
+    segments = spark.createDataFrame(rows, schema=SEGMENT)
+
+    first = dedupe_across_days(dedupe_within_day(segments), spark, day, seen_table)
+    assert first.count() == 5
+    record_seen(first, day=day, spark=spark, seen_table=seen_table, config=SPARK)
+
+    # Same day again: must reprocess in full, because the partition-replacing
+    # writers downstream assume a complete day.
+    second = dedupe_across_days(dedupe_within_day(segments), spark, day, seen_table)
+    assert second.count() == 5, "re-running the same day must not self-cancel"
+
+    # A genuinely later day must still be deduplicated against this one.
+    later = dedupe_across_days(dedupe_within_day(segments), spark, "2026-08-23", seen_table)
+    assert later.count() == 0, "cross-day dedupe must still work"

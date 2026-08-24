@@ -94,7 +94,8 @@ def run(day: str, raw_path: str | None = None, config=SPARK, spark=None,
     segments_table = _table("segments", config)
     raw_segments = calls.mapInPandas(preprocess_batches, schema=SEGMENT)
     deduped = dedupe_across_days(
-        dedupe_within_day(raw_segments), spark, _table("seen_segments", config))
+        dedupe_within_day(raw_segments), spark, day,
+        _table("seen_segments", config))
     publish.write_day_partition(
         deduped.withColumn("run_id", F.lit(run_id)).withColumn("day", F.lit(day)),
         segments_table, day=day, config=config)
@@ -102,6 +103,16 @@ def run(day: str, raw_path: str | None = None, config=SPARK, spark=None,
     silver = spark.table(segments_table).filter(F.col("day") == day)
     segment_count, pii = silver.agg(
         F.count("*"), F.coalesce(F.sum("pii_redactions"), F.lit(0))).collect()[0]
+
+    # Calls in, nothing out, exit code zero: the worst outcome available to a
+    # daily job, because it is indistinguishable from a quiet day. Fail here
+    # instead of publishing an empty knowledge base and calling it a success.
+    if call_count and not segment_count:
+        raise RuntimeError(
+            f"{call_count} calls produced 0 segments for {day}. Likely causes: "
+            f"every hash already recorded in {_table('seen_segments', config)} "
+            f"for an earlier day, or a preprocessing failure. Refusing to "
+            f"report success on an empty run.")
 
     # --- extraction --------------------------------------------------------
     observations_table = _table("observations", config)
