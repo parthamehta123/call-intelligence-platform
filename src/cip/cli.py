@@ -105,6 +105,12 @@ def _cmd_eval_attribution(args) -> int:
     return 0
 
 
+def _cmd_eval_retrieval(args) -> int:
+    from .eval.retrieval_eval import report
+    print(report(k=args.k))
+    return 0
+
+
 def _cmd_audit(args) -> int:
     from .security.audit import audit
     for record in audit.tail(args.limit, event=args.event):
@@ -195,6 +201,10 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("eval-attribution", help="check evidence really came from the customer")
     p.add_argument("--day", **day)
     p.set_defaults(func=_cmd_eval_attribution)
+
+    p = sub.add_parser("eval-retrieval", help="Recall@K / MRR / nDCG, ablation, routing")
+    p.add_argument("--k", type=int, default=5)
+    p.set_defaults(func=_cmd_eval_retrieval)
 
     p = sub.add_parser("demo", help="end-to-end walkthrough")
     p.add_argument("--calls", type=int, default=4000)

@@ -5,7 +5,7 @@ in this repo. Every "Built" below was checked against the code, not
 remembered. Anything a reader could reasonably assume works and does not
 is marked plainly.
 
-**Built 25 · Partial 8 · Not built 5**
+**Built 26 · Partial 9 · Not built 5**
 
 ## Ingestion and preprocessing
 
@@ -72,6 +72,7 @@ is marked plainly.
 | Structured retrieval | **Built** — SQL over canonical state | `agent.py`, `tools.py` |
 | Hybrid retrieval: metadata filter + vector + BM25 + RRF | **Built** | `retrieval.hybrid_search` |
 | Reranker | **Partial** — heuristic overlap + status prior, not a cross-encoder | `retrieval._rerank_entry` |
+| Hybrid retrieval **benefit** | **Unproven** — ablation wired up and reports all three legs identical, because `embed()` is a hashed bag-of-words | `docs/RETRIEVAL.md` |
 | Grounded agent: citations, abstain on weak evidence | **Built** — both routes abstain rather than fill from memory | `agent.py` |
 
 ## Observability
@@ -84,13 +85,19 @@ is marked plainly.
 | Lineage / provenance | **Built** | `evidence` table |
 | Prompt / tool traces | **Partial** — tool calls and decisions audited; no prompt-level tracing | `security/audit.py` |
 | Router quality (precision / recall / threshold sweep) | **Built** — measured on two labelled sets, with a CI regression gate | `src/cip/eval/`, `docs/EVAL.md` |
-| Retrieval quality (Recall@K, nDCG, groundedness) | **Not built** — named as what to monitor, never measured | `docs/INTERVIEW.md` |
+| Retrieval quality (Recall@K, MRR, nDCG, routing, abstention) | **Built** — labelled query set, leg ablation, CI floors | `src/cip/eval/retrieval_eval.py`, `docs/RETRIEVAL.md` |
+| Groundedness of generated answers | **Not built** — trivially 1.0 for the offline agent; needs an LLM judge with the Claude backend | `docs/RETRIEVAL.md` |
 
 ## The six that are genuinely missing
 
 Ranked by how much they matter to the architecture's claims:
 
-1. **Retrieval quality metrics.** The *router* is now measured
+1. **A real embedding model.** Retrieval is now measured
+   (`docs/RETRIEVAL.md`) and the ablation reports hybrid, BM25 and dense as
+   *identical* — the hashed bag-of-words `embed()` cannot disagree with
+   BM25, so the repeatedly-stated hybrid benefit has no supporting
+   evidence. This is now the highest-value change: it converts a claim into
+   something measurable. The *router* is separately measured
    (`docs/EVAL.md`): precision 0.977 / recall 1.000 on 4,000 generated segments
    (a saturated set), 0.733 / 0.917 on 32 hand-written hard cases, with a
    CI floor.

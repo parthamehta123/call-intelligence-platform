@@ -1,4 +1,5 @@
-.PHONY: demo run generate status redteam test ask clean wheel eval-router \
+.PHONY: demo run generate status redteam test ask clean wheel \
+	eval-router eval-retrieval eval-attribution \
 	spark-setup spark-test spark-run bundle-validate bundle-deploy bundle-run
 
 PY          := PYTHONPATH=src python3
@@ -30,6 +31,12 @@ ask:
 
 eval-router:    ## measure the funnel: precision/recall/threshold sweep
 	$(PY) -m cip eval-router
+
+eval-retrieval: ## Recall@K / MRR / nDCG, leg ablation, routing, abstention
+	$(PY) -m cip eval-retrieval
+
+eval-attribution: ## did extracted evidence really come from the customer?
+	$(PY) -m cip eval-attribution
 
 # ---- spark / databricks ----------------------------------------------------
 # Deliberately an isolated venv: installing plain pyspark next to

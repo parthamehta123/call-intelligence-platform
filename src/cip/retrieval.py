@@ -40,7 +40,16 @@ _STOP = {"the", "a", "an", "is", "are", "of", "and", "to", "in", "for", "on", "w
 
 
 def tokenize(text: str) -> list[str]:
-    return [t for t in _TOKEN.findall(text.lower()) if t not in _STOP and len(t) > 1]
+    """Tokens keep internal dots and hyphens, and shed trailing ones.
+
+    The pattern allows dots so version strings survive as single tokens --
+    `7.2.13` must not become `7`, `2`, `13`. Left greedy, it also swallowed
+    sentence-final punctuation: "runs abnormally hot." indexed as `hot.`,
+    which never matched a query's `hot`. Every sentence-final word in the
+    corpus was silently unmatchable, quietly depressing BM25.
+    """
+    return [t for t in (m.strip(".-_") for m in _TOKEN.findall(text.lower()))
+            if t not in _STOP and len(t) > 1]
 
 
 def _slot(token: str) -> int:
@@ -141,7 +150,11 @@ class Index:
         return sorted([s for s in scored if s[1] > 0], key=lambda kv: -kv[1])
 
     # -- persistence -------------------------------------------------------
-    def save(self, path: Path = INDEX_PATH) -> None:
+    def save(self, path: Path | None = None) -> None:
+        # Resolved at call time, not bound as a default. A default argument
+        # is evaluated once at import, so pointing INDEX_PATH at a temporary
+        # directory had no effect and writes went to the real index.
+        path = Path(path or INDEX_PATH)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({
             "docs": {k: v.__dict__ for k, v in self.docs.items()},
@@ -150,7 +163,8 @@ class Index:
         }))
 
     @staticmethod
-    def load(path: Path = INDEX_PATH) -> "Index":
+    def load(path: Path | None = None) -> "Index":
+        path = Path(path or INDEX_PATH)
         index = Index()
         if not path.exists():
             return index
@@ -179,7 +193,15 @@ def _extract_filters(query: str) -> dict[str, str]:
     return {"product_id": product_id} if product_id and confidence >= 0.85 else {}
 
 
-def hybrid_search(query: str, top_k: int | None = None) -> list[dict]:
+def hybrid_search(query: str, top_k: int | None = None,
+                  mode: str = "hybrid") -> list[dict]:
+    """`mode` exists so the legs can be measured separately.
+
+    "hybrid retrieval beats either leg" is the load-bearing claim behind
+    this module, and an ablation is the only thing that can support it.
+    `bm25` and `dense` run the identical filter and rerank path so the
+    comparison isolates the retrieval leg and nothing else.
+    """
     top_k = top_k or CONFIG.top_k
     index = Index.load()
     if not index.docs:
@@ -194,17 +216,93 @@ def hybrid_search(query: str, top_k: int | None = None) -> list[dict]:
     lexical = [(d, s) for d, s in index.bm25(query) if d in allowed][:20]
     dense = [(d, s) for d, s in index.dense(query) if d in allowed][:20]
 
+    rankings = {"hybrid": (lexical, dense),
+                "bm25": (lexical,), "dense": (dense,)}[mode]
+
     # Reciprocal rank fusion: rank-based, so the two score scales never
     # need calibrating against each other.
     fused: dict[str, float] = {}
-    for ranking in (lexical, dense):
+    for ranking in rankings:
         for rank, (doc_id, _) in enumerate(ranking):
             fused[doc_id] = fused.get(doc_id, 0.0) + 1.0 / (CONFIG.rrf_k + rank + 1)
 
     ranked = sorted(fused.items(), key=lambda kv: -kv[1])[: top_k * 3]
-    results = [_rerank_entry(index.docs[doc_id], query, score) for doc_id, score in ranked]
+    results = []
+    for doc_id, score in ranked:
+        doc = index.docs[doc_id]
+        coverage = topical_coverage(query, doc, index)
+        # Abstain rather than return a near-miss. A score floor cannot do
+        # this job: measured, unanswerable queries scored 0.568 and 0.678
+        # while genuine answers scored as low as 0.542, so the
+        # distributions overlap and any cutoff loses real answers. Topical
+        # coverage separates them because it ignores the product name that
+        # both share.
+        if coverage <= 0.0:
+            continue
+        entry = _rerank_entry(doc, query, score)
+        entry["coverage"] = round(coverage, 3)
+        results.append(entry)
     results.sort(key=lambda r: -r["score"])
     return results[:top_k]
+
+
+# A term in more than this share of the corpus tells you nothing about
+# which document to pick. "customers" appears in every validated issue
+# document ("Reported by N distinct customers"), so counting it as topical
+# overlap would make every query look covered.
+_MAX_DF_RATIO = 0.5
+
+
+def _stem(token: str) -> str:
+    """Crude suffix stripping, used ONLY for the coverage check.
+
+    Coverage needs "reboot" to match "reboots" and "export" to match
+    "exporting"; requiring exact tokens dropped genuine answers and cut
+    Recall@5 from 0.818 to 0.576. BM25 keeps working on unstemmed tokens,
+    so ranking behaviour is unchanged -- this affects the abstain decision
+    only.
+    """
+    for suffix in ("ing", "ed", "es", "s"):
+        if len(token) > len(suffix) + 3 and token.endswith(suffix):
+            return token[: -len(suffix)]
+    return token
+
+
+def discriminating_terms(query: str, index: "Index") -> set[str]:
+    """Query terms that actually narrow the corpus.
+
+    Product names are removed deliberately. "Do you support IPv6 multicast
+    routing on the X100" matches the X100 overview strongly on the product
+    alone, and that similarity says nothing about whether multicast is
+    covered -- which is exactly how an unanswerable question draws a
+    confident citation.
+    """
+    from .catalog import load_catalog
+
+    product_tokens: set[str] = set()
+    for product in load_catalog():
+        for phrase in [product["product_id"], product["canonical_name"],
+                       *product["aliases"], *product.get("generic_aliases", [])]:
+            product_tokens.update(tokenize(phrase))
+
+    n_docs = len(index.docs) or 1
+    return {
+        token for token in tokenize(query)
+        if token not in product_tokens
+        and index.df.get(token, 0) / n_docs <= _MAX_DF_RATIO
+    }
+
+
+def topical_coverage(query: str, doc: Doc, index: "Index") -> float:
+    """Share of the query's discriminating terms the document actually contains."""
+    terms = discriminating_terms(query, index)
+    if not terms:
+        # Nothing but product names and boilerplate: a browse query, where
+        # returning the product's documents is the right behaviour.
+        return 1.0
+    doc_stems = {_stem(token) for token in doc.tokens}
+    present = sum(1 for term in terms if _stem(term) in doc_stems)
+    return present / len(terms)
 
 
 def _rerank_entry(doc: Doc, query: str, fused_score: float) -> dict:
