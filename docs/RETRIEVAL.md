@@ -135,6 +135,13 @@ three real answers). It still misses the IPv6 case, where "do you support
 IPv6" against an overview listing "supported firmware versions" is a
 defensible yes for a small model.
 
+These figures were re-run with the stale hub token suppressed
+(`HF_HUB_DISABLE_IMPLICIT_TOKEN=1`, now set on the eval targets) and are
+unchanged, with the judge verified as engaged rather than failing open —
+mixed verdicts, 5/6 on the direct probe. The models are public and need no
+authentication; an *invalid* stored token is worse than none, because the
+hub returns 401 where anonymous access succeeds.
+
 **The finding is the sensitivity, not the score.** A rewording moved
 Recall@5 from 0.091 to 0.758. A 1.5B model largely follows the prompt's
 lean rather than judging the document, which is precisely the argument for

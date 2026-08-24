@@ -37,13 +37,19 @@ eval-retrieval: ## Recall@K / MRR / nDCG, leg ablation, routing, abstention
 
 # Same eval against a real local encoder. HF_HUB_OFFLINE avoids a network
 # round-trip for an already-cached model.
+# HF_HUB_DISABLE_IMPLICIT_TOKEN: these models are public and need no auth.
+# A stale token in ~/.cache/huggingface/token makes the hub return 401 where
+# anonymous access succeeds -- which previously made the judge fail open on
+# every document and report verdicts that were really just defaults.
+HF_ANON := HF_HUB_DISABLE_IMPLICIT_TOKEN=1
+
 eval-retrieval-judge: ## same eval with the local LLM abstention judge
-	CIP_JUDGE=local $(PY) -m cip eval-retrieval
+	$(HF_ANON) CIP_JUDGE=local $(PY) -m cip eval-retrieval
 
 eval-retrieval-real:
-	HF_HUB_OFFLINE=1 CIP_EMBEDDER=sentence-transformers $(PY) -c \
+	$(HF_ANON) HF_HUB_OFFLINE=1 CIP_EMBEDDER=sentence-transformers $(PY) -c \
 	  "from cip import kb, retrieval; conn=kb.connect().__enter__(); conn.execute('UPDATE documents SET dirty=1'); conn.commit(); retrieval.refresh_index()"
-	HF_HUB_OFFLINE=1 CIP_EMBEDDER=sentence-transformers $(PY) -m cip eval-retrieval
+	$(HF_ANON) HF_HUB_OFFLINE=1 CIP_EMBEDDER=sentence-transformers $(PY) -m cip eval-retrieval
 
 eval-attribution: ## did extracted evidence really come from the customer?
 	$(PY) -m cip eval-attribution
