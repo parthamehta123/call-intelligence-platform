@@ -44,8 +44,8 @@ is marked plainly.
 | Policy engine | **Built** — RBAC, action, contextual, destination, confidence thresholds; **no LLM in the decision path** | `security/policy.py` |
 | Allow / deny → block, log, alert, human review | **Built** | `security/audit.py`, `review_queue` |
 | Trusted writer, narrow API, no arbitrary shell | **Built** — there is no `shell`, no `execute_sql`, no `write_file` anywhere | `tools.py` |
-| Sandbox / isolation for privileged execution | **Not built** — design guidance only | `docs/SECURITY.md` |
-| Egress control | **Partial** — allowlist + SSRF guard enforced in-process; no proxy or firewall | `security/egress.py` |
+| Sandbox / isolation for privileged execution | **Built** — scrubbed environment, disposable cwd jail, rlimits and a wall-clock kill; enforceable limits probed per platform rather than assumed (macOS ignores `RLIMIT_AS`) | `src/cip/security/sandbox.py` |
+| Egress control | **Built** — enforced beneath the socket layer, so `requests`, `urllib` and raw sockets are all covered; hostname recovered through DNS, raw-IP and DNS-rebinding bypasses closed | `src/cip/security/netguard.py` |
 
 ## Validation and canonical state
 

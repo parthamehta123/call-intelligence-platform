@@ -114,6 +114,43 @@ schema-valid
 Note what is absent: the model's own assurance. Nothing an LLM says about
 its output moves data across this line.
 
+## Enforcement, not guidance
+
+Two controls in this document were previously described rather than
+implemented. Both now have code and tests.
+
+**Sandbox** (`security/sandbox.py`). A scrubbed environment — an allowlist,
+so a credential variable added tomorrow is dropped by default rather than
+after someone remembers — a disposable working directory destroyed with the
+task, rlimits, and a wall-clock kill for processes that sleep past a CPU
+limit. `enforceable_limits()` probes what the platform actually accepts:
+macOS silently ignores `RLIMIT_AS`, so memory capping needs Linux or a
+container, and the sandbox reports that rather than claiming a limit it
+does not apply.
+
+**Egress** (`security/netguard.py`). `check_destination()` decided; it did
+not enforce. Any code reaching for `requests` or a raw socket bypassed it
+entirely, which makes an allowlist documentation rather than a control. The
+check now sits beneath `socket.connect`, so every outbound TCP connection
+in the process passes it regardless of the library that opened it:
+
+```
+allowlisted host   permitted
+unlisted host      blocked at socket
+raw IP, no DNS     blocked
+```
+
+Two bypasses closed on the way, both found by tests rather than by reading:
+
+* `connect()` receives a resolved address, so comparing an IP against a
+  hostname allowlist blocked *everything* — including allowlisted hosts.
+  It looked like a working guard because the attacks were blocked too. The
+  hostname is now recovered by recording what DNS resolved.
+* Exempting loopback before checking that hostname is a **DNS-rebinding
+  bypass**: an attacker-controlled domain resolving to 127.0.0.1 sails
+  through a check that only ever sees the address. The name is resolved
+  first, and the exemption applies only to literal loopback connections.
+
 ## If root really is required
 
 Some agents genuinely need shell, Docker, package installs. Then:
