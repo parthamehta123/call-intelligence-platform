@@ -82,9 +82,26 @@ def test_product_name_alone_does_not_make_a_document_relevant(indexed):
 
 
 def test_retrieval_quality_floor():
-    """Measured on the labelled set; fails if ranking regresses."""
-    cases = load_cases()
-    score = score_mode(cases, "hybrid", k=5)
+    """Measured on the labelled set against the real corpus.
+
+    Pins INDEX_PATH explicitly. The module-scoped `indexed` fixture
+    repoints it at a six-document temporary corpus, so without this the
+    result depended on test ordering -- passing alone and failing in the
+    suite, which is worse than either outcome consistently.
+    """
+    from cip.config import DATA
+
+    real_index = DATA / "index.json"
+    if not real_index.exists():
+        pytest.skip("no live index; run `make run` to build one")
+
+    original = retrieval.INDEX_PATH
+    retrieval.INDEX_PATH = real_index
+    try:
+        score = score_mode(load_cases(), "hybrid", k=5)
+    finally:
+        retrieval.INDEX_PATH = original
+
     assert score.recall >= 0.70, f"Recall@5 {score.recall:.3f} below floor"
     assert score.mrr >= 0.65, f"MRR {score.mrr:.3f} below floor"
 

@@ -147,6 +147,7 @@ none, because the hub 401s where anonymous access succeeds):
 | MiniLM | local 1.5B | **0.788** | 0/2 |
 | hashed | claude-opus-5, "does it answer" (strict) | 0.591 | **2/2** |
 | hashed | claude-opus-5, "does it answer" (coherent) | 0.318 | **2/2** |
+| hashed | **claude-opus-5, framed as a filter** | **0.712** | **2/2** |
 
 `claude-opus-5` is **the only mechanism that has solved abstention** — 2/2,
 where rerank score, dense similarity, a cross-encoder and a 1.5B judge all
@@ -199,9 +200,39 @@ XG482 Route Loss for the export query on genuine topic grounds — the
 subject discrimination is working; only the completeness standard was
 wrong.
 
-**Unmeasured since that reframing.** Both the 0.591 and 0.318 figures come
-from prompts that asked the wrong question, and neither should be read as
-what this judge achieves as a retrieval filter.
+### Result: abstention solved, at no real retrieval cost
+
+Reframed as a filter, `claude-opus-5` gives **2/2 abstention at Recall@5
+0.712** against a 0.758 baseline — and reading the six rejections, five are
+unambiguously correct and the sixth is a label this repo had wrong.
+
+| rejected | correct? |
+|---|---|
+| PULSE7 Overheating, XG482 Route Loss, PULSE7 Stability Praise, for *"why does exporting a report never finish"* | yes — different subjects |
+| PULSE7 Stability Praise for *"PULSE7 1.9 thermal behaviour"* | yes — stability is a different attribute |
+| X100 overview for *"do you support IPv6 multicast routing"* | yes — this is the unanswerable case nothing else caught |
+| PULSE7 **overview** for *"PULSE7 1.9 thermal behaviour"* | **the label was wrong** |
+
+That last document reads "Pulse 7 Wireless AP is part of the wireless line.
+Supported firmware versions: 1.8, 1.9. Known aliases…" — no thermal content
+of any kind. The original justification written beside that label ("the
+issue is worded as 'runs abnormally hot'") only ever described the
+*overheating* document; the overview was added reflexively.
+
+The label is corrected and **flagged as revised** in
+`eval/retrieval_cases.jsonl`, with a `label_revised` field carried through
+to the eval, because changing ground truth after a model disagrees is how
+overfitting gets laundered. With the corrected label the baseline is
+Recall@5 **0.758**.
+
+So the judge's measured cost against the corrected labels is one document
+it was right about. It is the only mechanism of the four tried that
+achieves 2/2, and the first that does not trade recall for it.
+
+**Still to confirm**: the 0.712 figure was measured against the *old*
+labels. A re-run against the corrected set is arithmetic-predictable at
+≈0.758 — but predicted is not measured, and it should be re-run before that
+number is quoted.
 
 The judge is verified as engaged rather than failing open — mixed verdicts,
 5/6 on a direct probe. It costs no recall in any configuration. **It also

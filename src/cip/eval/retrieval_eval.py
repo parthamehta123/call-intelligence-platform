@@ -38,6 +38,10 @@ class RetrievalCase:
     category: str
     route: str
     why: str = ""
+    # Set when a label was changed after the fact. Revising ground truth
+    # because a model disagreed is how overfitting gets laundered, so the
+    # cases that were touched are marked rather than quietly edited.
+    label_revised: bool = False
 
 
 def load_cases(path: Path | None = None) -> list[RetrievalCase]:
