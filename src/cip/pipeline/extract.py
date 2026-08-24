@@ -308,18 +308,59 @@ def _from_payload(segment: Segment, payload: dict, extractor: str) -> Observatio
 
 
 # --- stage entry point -----------------------------------------------------
+def _validated(segment: Segment, obs: Observation | None) -> Observation | None:
+    if obs is None:
+        return None
+    errors = obs.validate()
+    if not errors:
+        return obs
+    # Schema failure is a security event, not just a data-quality one: it is
+    # the shape a successful injection would take.
+    from ..security.audit import audit
+    audit.write("extraction_rejected", segment_id=segment.segment_id,
+                errors=errors, extractor=obs.extractor)
+    return None
+
+
 def extract(segments: Iterable[Segment]) -> Iterator[Observation]:
-    backend = CONFIG.extractor
-    for segment in segments:
-        obs = extract_claude(segment) if backend == "claude" else extract_rules(segment)
-        if obs is None:
-            continue
-        errors = obs.validate()
-        if errors:
-            # Schema failure is a security event, not just a data-quality one:
-            # it is the shape a successful injection would take.
-            from ..security.audit import audit
-            audit.write("extraction_rejected", segment_id=segment.segment_id,
-                        errors=errors, extractor=obs.extractor)
-            continue
-        yield obs
+    """Rules extraction is CPU-bound and sequential; Claude extraction is
+    IO-bound and is not.
+
+    A per-segment loop against a network model leaves the whole Spark task
+    idle for the length of its batch. Calls are issued concurrently with a
+    bounded pool -- bounded because the ceiling should be a decision, not
+    whatever the partition size happens to be.
+
+    The Batch API (`extract_claude_batch`) is deliberately not used here.
+    It is asynchronous with up to 24 hours of latency, which suits an
+    offline re-processing sweep and not a stage inside a running job.
+    """
+    if CONFIG.extractor != "claude":
+        for segment in segments:
+            yield from filter(None, [_validated(segment, extract_rules(segment))])
+        return
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    batch = list(segments)
+    if CONFIG.extract_limit:
+        batch = batch[: CONFIG.extract_limit]
+
+    with ThreadPoolExecutor(max_workers=CONFIG.extract_concurrency) as pool:
+        for segment, obs in zip(batch, pool.map(_extract_one, batch)):
+            validated = _validated(segment, obs)
+            if validated is not None:
+                yield validated
+
+
+def _extract_one(segment: Segment) -> Observation | None:
+    """One segment, one call. Failures are logged and skipped rather than
+    failing the partition: losing one observation is recoverable, losing the
+    task's whole batch is not."""
+    try:
+        return extract_claude(segment)
+    except Exception as exc:
+        from ..security.audit import audit
+        audit.write("extraction_failed", segment_id=segment.segment_id,
+                    error=f"{type(exc).__name__}: {exc}"[:300])
+        return None

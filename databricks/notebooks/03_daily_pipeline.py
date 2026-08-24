@@ -19,6 +19,8 @@ dbutils.widgets.text("day", "")
 dbutils.widgets.text("catalog", "cip_dev")
 dbutils.widgets.text("schema", "call_intelligence")
 dbutils.widgets.text("volume", "raw_calls")
+dbutils.widgets.text("extractor", "rules")
+dbutils.widgets.text("secret_scope", "cip")
 
 catalog = dbutils.widgets.get("catalog")
 schema = dbutils.widgets.get("schema")
@@ -44,9 +46,32 @@ os.environ["CIP_SCHEMA"] = schema
 os.environ["CIP_VOLUME"] = volume
 os.environ["CIP_TABLE_FORMAT"] = "delta"
 
+# Extraction backend. Serverless tasks have no `spark_env_vars`, so the
+# notebook reads the secret itself -- the key is never in the bundle, the
+# job JSON, or this file.
+extractor = dbutils.widgets.get("extractor").strip() or "rules"
+if extractor == "claude":
+    scope = dbutils.widgets.get("secret_scope").strip() or "cip"
+    try:
+        os.environ["ANTHROPIC_API_KEY"] = dbutils.secrets.get(scope, "anthropic_api_key")
+    except Exception as exc:
+        raise RuntimeError(
+            f"extractor=claude needs secret 'anthropic_api_key' in scope "
+            f"{scope!r}. Create it with:\n"
+            f"  databricks secrets create-scope {scope}\n"
+            f"  databricks secrets put-secret {scope} anthropic_api_key\n"
+            f"Refusing to fall back to the rules extractor silently, which "
+            f"would produce a full set of numbers from the wrong backend."
+        ) from exc
+os.environ["CIP_EXTRACTOR"] = extractor
+print("extractor backend:", extractor)
+
 from cip.config import SPARK
 SPARK.catalog, SPARK.schema, SPARK.volume = catalog, schema, volume
 SPARK.table_format = "delta"
+
+from cip.config import CONFIG
+CONFIG.extractor = extractor
 
 raw_path = f"/Volumes/{catalog}/{schema}/{volume}"
 

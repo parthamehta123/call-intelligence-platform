@@ -77,6 +77,14 @@ class Config:
     # "rules" runs fully offline (default, deterministic, used by tests).
     # "claude" calls the Messages API with a constrained tool schema.
     extractor: str = os.environ.get("CIP_EXTRACTOR", "rules")
+    # Concurrent model calls per partition. Extraction is IO-bound, so a
+    # sequential loop leaves a Spark task waiting on the network for the
+    # length of its whole batch.
+    extract_concurrency: int = int(os.environ.get("CIP_EXTRACT_CONCURRENCY", "8"))
+    # Hard cap on segments sent to a paid model, per partition. 0 means no
+    # cap. Exists so a first run against a metered API cannot cost more than
+    # intended because a threshold moved.
+    extract_limit: int = int(os.environ.get("CIP_EXTRACT_LIMIT", "0"))
     claude_model: str = os.environ.get("CIP_MODEL", "claude-opus-5")
 
     # --- security ---------------------------------------------------------

@@ -23,6 +23,15 @@ variables:
   notification_email:
     description: Address that receives on-failure notifications.
     default: parthamehta10@gmail.com
+  extractor:
+    description: >-
+      "rules" runs offline and deterministically. "claude" calls
+      claude-opus-5 and requires the secret `anthropic_api_key` in the scope
+      below -- the key is never stored in this bundle.
+    default: rules
+  secret_scope:
+    description: Databricks secret scope holding anthropic_api_key.
+    default: cip
   run_as_service_principal:
     description: >-
       Application ID (a UUID) of the service principal that owns production
@@ -96,6 +105,8 @@ resources:
               catalog: ${var.catalog}
               schema: ${var.schema}
               volume: ${var.volume}
+              extractor: ${var.extractor}
+              secret_scope: ${var.secret_scope}
 
         - task_key: security_checks
           depends_on:
@@ -142,6 +153,8 @@ targets:
                   catalog: ${var.catalog}
                   schema: ${var.schema}
                   volume: ${var.volume}
+                  extractor: ${var.extractor}
+                  secret_scope: ${var.secret_scope}
 
   prod:
     mode: production
