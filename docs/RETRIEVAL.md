@@ -145,7 +145,8 @@ none, because the hub 401s where anonymous access succeeds):
 | hashed | local 1.5B | 0.758 | 1/2 |
 | MiniLM | off | **0.788** | 0/2 |
 | MiniLM | local 1.5B | **0.788** | 0/2 |
-| hashed | **claude-opus-5** | 0.591 | **2/2** |
+| hashed | claude-opus-5, "does it answer" (strict) | 0.591 | **2/2** |
+| hashed | claude-opus-5, "does it answer" (coherent) | 0.318 | **2/2** |
 
 `claude-opus-5` is **the only mechanism that has solved abstention** — 2/2,
 where rerank score, dense similarity, a cross-encoder and a 1.5B judge all
@@ -165,9 +166,42 @@ are now separate, and the judge's `reason` field is surfaced in the report
 so the next run explains its own rejections instead of leaving them to be
 guessed at.
 
-**Unmeasured since that fix.** The 0.591 / 2-of-2 figures above are from
-the incoherent prompt and should not be read as what a well-prompted judge
-achieves.
+### The judge was being asked the wrong question
+
+With the prompts separated, `product_doc` recovered from 0.000 to **1.000**
+— the firmware-versions overview is accepted. Abstention held at **2/2**.
+But overall Recall@5 fell further, to 0.318, and surfacing the judge's own
+reasons made the cause plain:
+
+| query | rejected document | judge's reason |
+|---|---|---|
+| why does exporting a report never finish | MERIDIAN Export Timeout | "merely restates the symptom without giving any cause" |
+| status of the X100 reboot problem | X100 Spontaneous Reboot | "gives no status information such as open/resolved, fix" |
+| the access point gets too hot to touch | PULSE7 Overheating | "no cause, diagnosis, thermal specification, or remedy" |
+
+Every one of those is the **correct** document for the query. Asked
+"does this document answer the question", the judge did exactly that — it
+graded answer completeness. A document that names a defect without
+explaining its cause does not *answer* "why", and the judge was right on
+its own terms.
+
+But that is the wrong criterion for retrieval. The alternative to showing
+an incomplete document is showing **nothing**, and a support agent reading
+"report export times out, 129 customers, status observed" is better served
+than one reading "no results". Answer completeness is a question for the
+generation step, which can say what is known and what is not; it is not a
+question for the filter that decides whether the reader sees anything.
+
+The prompt now frames the task as filtering rather than grading, states
+explicitly that partial and stub documents count, and names the cost of a
+rejection. Encouragingly, the same run rejected PULSE7 Overheating and
+XG482 Route Loss for the export query on genuine topic grounds — the
+subject discrimination is working; only the completeness standard was
+wrong.
+
+**Unmeasured since that reframing.** Both the 0.591 and 0.318 figures come
+from prompts that asked the wrong question, and neither should be read as
+what this judge achieves as a retrieval filter.
 
 The judge is verified as engaged rather than failing open — mixed verdicts,
 5/6 on a direct probe. It costs no recall in any configuration. **It also

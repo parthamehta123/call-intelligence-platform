@@ -90,22 +90,31 @@ Answer no only if the document is about a different topic.
 
 Answer (yes or no):"""
 
-CLAUDE_PROMPT = """Question: {query}
+CLAUDE_PROMPT = """You are filtering search results, not grading answers.
+
+Question: {query}
 
 Document: {document}
 
-Does this document contain information that answers the question?
+Is this document about the subject the question asks about?
 
-Answer yes if the document states something the asker was looking for, even
-partially, and even if it words it differently. A product overview that
-lists firmware versions answers a question about firmware versions.
+Say yes if the document concerns that subject, even when it is incomplete.
+A document that only states a symptom is still about that symptom. A
+document that names an issue without giving its cause, status or fix is
+still about that issue. A product overview that lists firmware versions is
+still about that product's firmware. Partial, terse and stub documents all
+count as yes.
 
-Answer no if the document is about a different attribute of the same
-product -- a document about overheating does not answer a question about
-warranty length, however much else it shares.
+Say no only when the document is about a DIFFERENT subject: a different
+product, or a different attribute of the same product. A document about
+overheating is not about warranty length. A document about static routes is
+not about report exports.
 
-Give a one-sentence reason naming the specific fact that does or does not
-appear."""
+The consequence of no is that the reader is shown nothing at all, so
+reserve it for documents that genuinely would not help.
+
+Give a one-sentence reason naming the subject of the document.
+"""
 
 # Kept for backwards compatibility with callers that imported PROMPT.
 PROMPT = LOCAL_PROMPT
