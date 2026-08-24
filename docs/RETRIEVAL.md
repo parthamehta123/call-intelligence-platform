@@ -145,6 +145,29 @@ none, because the hub 401s where anonymous access succeeds):
 | hashed | local 1.5B | 0.758 | 1/2 |
 | MiniLM | off | **0.788** | 0/2 |
 | MiniLM | local 1.5B | **0.788** | 0/2 |
+| hashed | **claude-opus-5** | 0.591 | **2/2** |
+
+`claude-opus-5` is **the only mechanism that has solved abstention** — 2/2,
+where rerank score, dense similarity, a cross-encoder and a 1.5B judge all
+failed. It rejected both topically-adjacent unanswerable questions on the
+right grounds.
+
+It also cost recall: 0.758 → 0.591, concentrated entirely in one row —
+`product_doc` fell from 1.000 to **0.000**. The judge rejected
+`doc::XG482::overview` for *"which firmware versions does the branch
+gateway support"*, against a document whose body reads "Supported firmware
+versions: 3.4, 3.5". That is not strictness; that is a wrong answer, and
+the cause was a prompt this repo built badly: the Claude path was sent a
+**strict** "does it answer" system prompt, a **lenient** "same topic, even
+partially" question, and a `yes or no` tail that exists only for the local
+backend's logit scoring — while being forced to emit JSON. The two prompts
+are now separate, and the judge's `reason` field is surfaced in the report
+so the next run explains its own rejections instead of leaving them to be
+guessed at.
+
+**Unmeasured since that fix.** The 0.591 / 2-of-2 figures above are from
+the incoherent prompt and should not be read as what a well-prompted judge
+achieves.
 
 The judge is verified as engaged rather than failing open — mixed verdicts,
 5/6 on a direct probe. It costs no recall in any configuration. **It also

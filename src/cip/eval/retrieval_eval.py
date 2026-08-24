@@ -132,7 +132,7 @@ def abstention(cases: list[RetrievalCase], k: int = 5) -> tuple[int, int, list[s
 
 
 def report(k: int = 5) -> str:
-    from ..judge import STATS as JUDGE_STATS, reset_stats
+    from ..judge import REJECTIONS, STATS as JUDGE_STATS, reset_stats
 
     reset_stats()
     cases = load_cases()
@@ -169,6 +169,17 @@ def report(k: int = 5) -> str:
     if CONFIG.judge != "none":
         lines += ["", f"judge: {CONFIG.judge} ({CONFIG.judge_model})",
                   f"  verdicts requested {calls}, failed {failures}"]
+        if REJECTIONS:
+            lines.append(f"  rejected {len(REJECTIONS)} documents; reasons given:")
+            seen: set[str] = set()
+            for r in REJECTIONS:
+                key = f"{r['query'][:40]}|{r['document'][:40]}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                lines.append(f"    Q: {r['query'][:64]}")
+                lines.append(f"    D: {r['document'][:64]}")
+                lines.append(f"    -> {r['reason'][:150]}")
         if failures:
             lines += [
                 "",

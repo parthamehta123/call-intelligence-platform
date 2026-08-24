@@ -44,6 +44,7 @@ STATS = {"calls": 0, "failures": 0}
 
 def reset_stats() -> None:
     STATS.update(calls=0, failures=0)
+    REJECTIONS.clear()
 
 # Sentences the knowledge base appends for provenance. They are bookkeeping,
 # not topical content, and they measurably swing a small judge: the same
@@ -51,8 +52,13 @@ def reset_stats() -> None:
 # "yes" once "Reported by 98 distinct customers across APAC, EU, LATAM, US.
 # Severity high. Status observed." was appended. The judge is asked about
 # the claim, not the audit trail.
-_PROVENANCE = ("reported by", "severity ", "status ", "first seen", "last seen",
-               "known aliases", "supported firmware versions")
+# Strictly the audit trail. "Supported firmware versions: 3.4, 3.5" and the
+# alias list were on this list once, and both are document *content*: a
+# product overview exists to state exactly those things. Stripping them made
+# the judge reject overviews for questions they answered, and drove
+# product_doc recall to 0.000 in the claude-opus-5 run. The judge was right
+# about what it was shown; it was shown the wrong thing.
+_PROVENANCE = ("reported by", "severity ", "status ", "first seen", "last seen")
 
 
 def claim_view(title: str, body: str, limit: int = 400) -> str:
@@ -65,7 +71,14 @@ def claim_view(title: str, body: str, limit: int = 400) -> str:
     return f"{title}. {'. '.join(kept)}"[:limit]
 
 
-PROMPT = """Question: {query}
+# Two prompts, because the backends need different things and sharing one
+# produced an incoherent request: the Claude path was given a strict
+# "does it answer" system prompt, a lenient "same topic, even partially"
+# question, and a "reply yes or no" tail while being forced to emit JSON.
+# Rejecting a product overview that literally lists the firmware versions a
+# question asked for is the kind of result that contradiction produces.
+
+LOCAL_PROMPT = """Question: {query}
 
 Document: {document}
 
@@ -76,6 +89,31 @@ partially, and even if it uses different words.
 Answer no only if the document is about a different topic.
 
 Answer (yes or no):"""
+
+CLAUDE_PROMPT = """Question: {query}
+
+Document: {document}
+
+Does this document contain information that answers the question?
+
+Answer yes if the document states something the asker was looking for, even
+partially, and even if it words it differently. A product overview that
+lists firmware versions answers a question about firmware versions.
+
+Answer no if the document is about a different attribute of the same
+product -- a document about overheating does not answer a question about
+warranty length, however much else it shares.
+
+Give a one-sentence reason naming the specific fact that does or does not
+appear."""
+
+# Kept for backwards compatibility with callers that imported PROMPT.
+PROMPT = LOCAL_PROMPT
+
+# Rejections, with the judge's stated reason. An eval that only prints a
+# recall number cannot show *why* documents were dropped, which is the
+# information needed to tell a strict judge from a broken prompt.
+REJECTIONS: list[dict] = []
 
 
 @lru_cache(maxsize=4096)
@@ -126,17 +164,21 @@ def _judge_claude(query: str, document: str, model: str) -> bool:
     response = client.messages.create(
         model=model,
         max_tokens=512,
-        system="You judge whether a document answers a question. Be strict: "
-               "a document about the right product but the wrong topic does "
-               "not answer the question.",
+        system="You judge whether a document answers a question. Judge the "
+               "content, not the document's genre: an overview, a release "
+               "note and an issue report are all capable of answering.",
         output_config={"format": {"type": "json_schema", "schema": VERDICT_SCHEMA}},
         messages=[{"role": "user",
-                   "content": PROMPT.format(query=query, document=document)}],
+                   "content": CLAUDE_PROMPT.format(query=query, document=document)}],
     )
     if response.stop_reason == "refusal":
         return True
     payload = json.loads(next(b.text for b in response.content if b.type == "text"))
-    return bool(payload["answers_the_question"])
+    verdict = bool(payload["answers_the_question"])
+    if not verdict:
+        REJECTIONS.append({"query": query, "document": document[:70],
+                           "reason": payload.get("reason", "")})
+    return verdict
 
 
 # --- local ------------------------------------------------------------------
@@ -204,7 +246,7 @@ def _judge_local(query: str, document: str, model_name: str) -> bool:
     import torch
 
     tokenizer, model = _load_local(model_name)
-    content = PROMPT.format(query=query, document=document)
+    content = LOCAL_PROMPT.format(query=query, document=document)
     text = _chat_prompt(tokenizer, content)
     inputs = tokenizer(text, return_tensors="pt")
     with torch.no_grad():
