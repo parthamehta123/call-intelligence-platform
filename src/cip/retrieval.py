@@ -277,10 +277,10 @@ def hybrid_search(query: str, top_k: int | None = None,
     # documents actually about to be cited bounds the work at top_k per
     # query. It can only remove -- it never reorders and never adds.
     if CONFIG.judge != "none":
-        from .judge import judge as judge_relevance
+        from .judge import claim_view, judge as judge_relevance
 
         results = [r for r in results
-                   if judge_relevance(query, f"{r['title']}. {r['body']}")]
+                   if judge_relevance(query, claim_view(r["title"], r["body"]))]
     return results
 
 

@@ -32,6 +32,26 @@ from functools import lru_cache
 
 from .config import CONFIG
 
+# Sentences the knowledge base appends for provenance. They are bookkeeping,
+# not topical content, and they measurably swing a small judge: the same
+# query against the same document flipped from a correct "no" to a wrong
+# "yes" once "Reported by 98 distinct customers across APAC, EU, LATAM, US.
+# Severity high. Status observed." was appended. The judge is asked about
+# the claim, not the audit trail.
+_PROVENANCE = ("reported by", "severity ", "status ", "first seen", "last seen",
+               "known aliases", "supported firmware versions")
+
+
+def claim_view(title: str, body: str, limit: int = 400) -> str:
+    """The document's substantive claim, with provenance clauses removed."""
+    kept = [
+        sentence.strip() for sentence in body.split(". ")
+        if sentence.strip()
+        and not sentence.strip().lower().startswith(_PROVENANCE)
+    ]
+    return f"{title}. {'. '.join(kept)}"[:limit]
+
+
 PROMPT = """Question: {query}
 
 Document: {document}

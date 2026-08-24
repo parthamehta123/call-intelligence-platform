@@ -135,12 +135,42 @@ three real answers). It still misses the IPv6 case, where "do you support
 IPv6" against an overview listing "supported firmware versions" is a
 defensible yes for a small model.
 
-These figures were re-run with the stale hub token suppressed
-(`HF_HUB_DISABLE_IMPLICIT_TOKEN=1`, now set on the eval targets) and are
-unchanged, with the judge verified as engaged rather than failing open —
-mixed verdicts, 5/6 on the direct probe. The models are public and need no
-authentication; an *invalid* stored token is worse than none, because the
-hub returns 401 where anonymous access succeeds.
+All four combinations, measured after `hf auth logout` removed the invalid
+stored token (these models are public; an *invalid* token is worse than
+none, because the hub 401s where anonymous access succeeds):
+
+| embedder | judge | Recall@5 | abstention |
+|---|---|---|---|
+| hashed | off | 0.758 | 1/2 |
+| hashed | local 1.5B | 0.758 | 1/2 |
+| MiniLM | off | **0.788** | 0/2 |
+| MiniLM | local 1.5B | **0.788** | 0/2 |
+
+The judge is verified as engaged rather than failing open — mixed verdicts,
+5/6 on a direct probe. It costs no recall in any configuration. **It also
+does not rescue abstention**: with the real encoder, semantic admission
+lets the product's documents through and the judge does not veto them.
+
+### A third sensitivity: document boilerplate
+
+The same query against the same document flips verdict on metadata alone:
+
+```
+"PULSE7 Overheating. Device runs abnormally hot on 1.9."          -> no  (correct)
+"...Reported by 98 distinct customers across APAC, EU, LATAM,
+   US on versions 1.9. Severity high. Status observed..."         -> yes (wrong)
+```
+
+Provenance clauses are bookkeeping, not topical content, so `claim_view()`
+strips them before judging. That removed the wrong-topic *issue* document
+from the warranty query's citations — but the product *overview* still
+passes, which a small model can defend: an overview genuinely is "about"
+the product.
+
+So the judge now demonstrates three independent sensitivities — prompt
+lean, document boilerplate, and document type — each of which moved its
+verdicts. That is the case for a stronger judge, not for further tuning of
+this one.
 
 **The finding is the sensitivity, not the score.** A rewording moved
 Recall@5 from 0.091 to 0.758. A 1.5B model largely follows the prompt's
