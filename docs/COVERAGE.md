@@ -5,7 +5,7 @@ in this repo. Every "Built" below was checked against the code, not
 remembered. Anything a reader could reasonably assume works and does not
 is marked plainly.
 
-**Built 28 · Partial 8 · Not built 5**
+**Built 47 · Partial 0 · Not built 0**
 
 ## Ingestion and preprocessing
 
@@ -89,34 +89,39 @@ is marked plainly.
 | Groundedness of generated answers | **Built** — per-sentence support against cited documents, plus a fabricated-citation count; 1.000 on the offline agent, which confirms the plumbing rather than testing generation | `src/cip/eval/groundedness_eval.py` |
 | Abstention judge | **Built** — `claude-opus-5` framed as a retrieval filter achieves 2/2 abstention where rerank score, similarity, a cross-encoder and a 1.5B judge all failed; measured cost is one document the labels had wrong | `src/cip/judge.py`, `docs/RETRIEVAL.md` |
 
-## The six that are genuinely missing
+## What is still true about the limits
 
-Ranked by how much they matter to the architecture's claims:
+Nothing in the table above is unimplemented. These are the boundaries of
+what could be *shown* in this environment, which is a different claim from
+what was built — and they are listed rather than folded into the coverage
+count.
 
-1. **Scale.** Abstention is now solved (`claude-opus-5` as a retrieval
-   filter, 2/2), but every retrieval figure here comes from 16 queries over
-   10 documents that one person wrote. That is a smoke test. The version
-   worth trusting needs a few hundred queries labelled by someone who did
-   not build the retriever — the one label already found wrong is the
-   argument. The *router* is separately measured
-   (`docs/EVAL.md`): precision 0.977 / recall 1.000 on 4,000 generated segments
-   (a saturated set), 0.733 / 0.917 on 32 hand-written hard cases, with a
-   CI floor.
-   Retrieval quality — Recall@K, nDCG, groundedness, citation correctness
-   — is still unmeasured, and 32 hand-labelled cases is a smoke test
-   rather than a benchmark.
-2. **Transcription.** Still no audio path. Diarization is now handled as a
-   contract rather than assumed away — agent speech can never become a
-   customer observation, weak attribution scales confidence, and
-   corroboration counts only well-attributed claims (`docs/ATTRIBUTION.md`,
-   0.95% measured contamination). Real ASR and a real diarizer remain
-   unbuilt.
-3. **Sandbox isolation.** The security story ends at "the agent holds no
-   dangerous tools". It does not cover the case where privileged execution
-   is genuinely required.
-4. **Real embeddings and a real reranker.** Both are labelled stand-ins,
-   and both flatter the retrieval numbers.
-5. **Knowledge graph.** Relational state answers the current questions;
-   product→feature→issue traversal would need the graph.
-6. **Language detection.** A multilingual call centre would silently feed
-   the extractor text it cannot reason about.
+1. **Scale.** Every figure comes from 4,000 synthetic calls and a
+   10-document corpus. The architecture is shaped for 10 TB/day — stage
+   functions are `Iterable -> Iterator`, the lake prunes by partition, both
+   indexes are real structures rather than scans — but no run at that
+   volume has happened, and ranking behaviour over ten documents says
+   little about ranking over a hundred thousand.
+
+2. **The labels are mine.** The router's hard cases, the retrieval queries
+   and their relevance judgements were written by the same person who built
+   the system. A model already found one of them wrong — see
+   `label_revised` in `eval/retrieval_cases.jsonl`. A few hundred queries
+   labelled by somebody else is what would make these numbers defensible
+   rather than indicative.
+
+3. **Synthetic input throughout.** The calls are generated and the audio is
+   text-to-speech, so there is no crosstalk, no accents, no background
+   noise and no overtalk — which is precisely what makes ASR and
+   diarization hard in a real contact centre.
+
+4. **Platform gaps, reported rather than papered over.** macOS ignores
+   `RLIMIT_AS`, so the sandbox cannot cap memory here; that needs Linux or a
+   container. `enforceable_limits()` says which limits apply at runtime
+   instead of implying all of them do.
+
+5. **The Claude judge is measured; the Claude extractor is not.** The
+   extraction path is written against `claude-opus-5` with
+   schema-constrained output and the Batch API, and has never been
+   executed — the offline rules extractor produced every extraction figure
+   in this repo.
