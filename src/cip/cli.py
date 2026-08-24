@@ -111,6 +111,12 @@ def _cmd_eval_retrieval(args) -> int:
     return 0
 
 
+def _cmd_eval_audio(args) -> int:
+    from .eval.audio_eval import evaluate_audio
+    print(evaluate_audio().render())
+    return 0
+
+
 def _cmd_audit(args) -> int:
     from .security.audit import audit
     for record in audit.tail(args.limit, event=args.event):
@@ -205,6 +211,9 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("eval-retrieval", help="Recall@K / MRR / nDCG, ablation, routing")
     p.add_argument("--k", type=int, default=5)
     p.set_defaults(func=_cmd_eval_retrieval)
+
+    p = sub.add_parser("eval-audio", help="ASR / language ID / diarization accuracy")
+    p.set_defaults(func=_cmd_eval_audio)
 
     p = sub.add_parser("demo", help="end-to-end walkthrough")
     p.add_argument("--calls", type=int, default=4000)

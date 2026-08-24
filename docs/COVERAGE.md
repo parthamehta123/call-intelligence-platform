@@ -12,10 +12,10 @@ is marked plainly.
 | Diagram box | Status | Where |
 |---|---|---|
 | Raw data lake, partitioned | **Partial** — `date=` only; region / call-centre partitioning is described but not implemented | `generate.py`, `pipeline/ingest.py`; a UC volume on Databricks |
-| Transcription (audio → text) | **Not built** — fixtures are text | — |
-| Speaker diarization | **Partial** — no audio, so labels come from the generator; the *contract* and its error handling are built and measured | `docs/ATTRIBUTION.md`, `src/cip/eval/attribution_eval.py` |
+| Transcription (audio → text) | **Built** — faster-whisper `large-v3` on real synthesised audio; WER 0.089, and that is formatting ("seven point two" → "7.2") | `src/cip/audio.py`, `docs/AUDIO.md` |
+| Speaker diarization | **Built** — dual-channel (the contact-centre standard) at 1.000; mono clustering fallback measured at 0.667 and documented as the weaker path | `src/cip/audio.py`, `docs/AUDIO.md` |
 | Normalization / dedup | **Built** — content-hash dedupe, global shuffle on Spark | `pipeline/preprocess.py`, `spark/dedupe.py` |
-| Language detection | **Not built** | — |
+| Language detection | **Built** — from the ASR pass, where the acoustic evidence is; `en` at p=0.97 | `src/cip/audio.py` |
 | PII masking | **Built** — redacted at the boundary, before persistence | `security/dlp.py`, applied in `preprocess.py` |
 
 ## Routing, chunking, resolution
