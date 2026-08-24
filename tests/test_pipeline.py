@@ -133,3 +133,46 @@ def test_review_queue_does_not_duplicate_across_runs(tmp_path, monkeypatch):
     assert len(rows) == 1
     assert rows[0]["reason"].endswith("(updated)"), "evidence should refresh"
     assert rows[0]["created_at"] == first, "queue age must survive a re-run"
+
+
+def test_lake_prunes_by_region_and_centre(tmp_path, monkeypatch):
+    """Partition pruning reads one directory rather than filtering the day
+    after loading it -- the difference between one centre's traffic and
+    everyone's at 10 TB."""
+    from cip.config import CONFIG
+    from cip.generate import generate
+    from cip.pipeline.ingest import list_partitions
+
+    monkeypatch.setattr(CONFIG, "lake", tmp_path / "lake")
+    generate(300, day="2026-08-22")
+
+    everything = list_partitions("2026-08-22")
+    one_region = list_partitions("2026-08-22", region="EU")
+    one_centre = list_partitions("2026-08-22", region="EU", centre="c01")
+
+    assert len(everything) > len(one_region) > len(one_centre) > 0
+    assert all("region=EU" in str(p) for p in one_region)
+    assert all("centre=c01" in str(p) for p in one_centre)
+
+
+def test_semantic_segmentation_only_engages_with_a_real_encoder():
+    """The hashed backend's similarity is lexical overlap in disguise, so
+    splitting on it would cut on vocabulary rather than topic."""
+    from cip.config import CONFIG
+    from cip.pipeline.preprocess import _semantic_boundary
+
+    assert CONFIG.embedder == "hashed"
+    assert _semantic_boundary("the vpn drops", "my invoice is wrong") is False
+
+
+def test_a_second_topic_starts_a_new_segment(monkeypatch):
+    """A chunk straddling two complaints yields one confused extraction
+    instead of two clean ones."""
+    from cip.pipeline import preprocess
+
+    monkeypatch.setattr(preprocess, "_semantic_boundary",
+                        lambda previous, current: "invoice" in current)
+    call = _call("The VPN keeps disconnecting every ten minutes.",
+                 "My invoice shows the wrong billing address.",
+                 product_hint="X100")
+    assert len(preprocess.segment_call(call)) == 2

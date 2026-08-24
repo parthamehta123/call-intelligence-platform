@@ -11,7 +11,7 @@ is marked plainly.
 
 | Diagram box | Status | Where |
 |---|---|---|
-| Raw data lake, partitioned | **Partial** — `date=` only; region / call-centre partitioning is described but not implemented | `generate.py`, `pipeline/ingest.py`; a UC volume on Databricks |
+| Raw data lake, partitioned | **Built** — `date=/region=/centre=`, pruned by path: 96 partitions → 24 for one region → 8 for one centre | `generate.py`, `pipeline/ingest.py` |
 | Transcription (audio → text) | **Built** — faster-whisper `large-v3` on real synthesised audio; WER 0.089, and that is formatting ("seven point two" → "7.2") | `src/cip/audio.py`, `docs/AUDIO.md` |
 | Speaker diarization | **Built** — dual-channel (the contact-centre standard) at 1.000; mono clustering fallback measured at 0.667 and documented as the weaker path | `src/cip/audio.py`, `docs/AUDIO.md` |
 | Normalization / dedup | **Built** — content-hash dedupe, global shuffle on Spark | `pipeline/preprocess.py`, `spark/dedupe.py` |
@@ -23,7 +23,7 @@ is marked plainly.
 | Diagram box | Status | Where |
 |---|---|---|
 | Relevance filter / router | **Built** — discards ~70% before inference; interface is `score → [0,1]` so a classifier drops in | `pipeline/route.py` |
-| Topic / semantic-aware chunking | **Partial** — speaker turns + lexical topic markers + size cap, preserving `call_id`/speaker/timestamps. Not a semantic model | `pipeline/preprocess.py` |
+| Topic / semantic-aware chunking | **Built** — embedding similarity between adjacent customer turns, alongside the lexical markers; engages only with a real encoder, since hashed similarity would split on vocabulary | `pipeline/preprocess.py` |
 | Product / entity resolution | **Built** — aliases, SKU, version, family, canonical ID, plus a CRM product hint for calls that never name the product | `catalog.py` |
 
 ## Extraction under untrusted input

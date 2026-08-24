@@ -33,6 +33,10 @@ class Config:
     # corroboration to clear reconciliation rather than being silently lost.
     attribution_floor: float = 0.50
     max_segment_chars: int = 1200
+    # Below this cosine between adjacent customer turns, treat the topic as
+    # having changed. Only consulted when a real encoder is configured.
+    topic_similarity_floor: float = float(
+        os.environ.get("CIP_TOPIC_FLOOR", "0.30"))
 
     # --- reconciliation ---------------------------------------------------
     auto_accept_mentions: int = 8        # independent corroboration required

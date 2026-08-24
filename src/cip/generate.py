@@ -21,6 +21,10 @@ from .config import CONFIG
 
 REGIONS = ["US", "EU", "APAC", "LATAM"]
 CHANNELS = ["voice", "chat", "email"]
+# Call centres, so the lake is partitioned the way the architecture
+# describes: date / region / centre. Partition pruning is the difference
+# between reading one centre's day and reading the whole day.
+CENTRES = ["c01", "c02", "c03"]
 
 SMALL_TALK = [
     "Hi, how are you doing today?",
@@ -101,15 +105,21 @@ def generate(n_calls: int = 4000, day: str = "2026-08-22", seed: int = 7) -> Pat
     cfg.ensure_dirs()
     day_dir = cfg.lake / f"date={day}"
     if day_dir.exists():
-        for old in day_dir.glob("*.jsonl"):
+        for old in day_dir.rglob("*.jsonl"):
             old.unlink()
     day_dir.mkdir(parents=True, exist_ok=True)
 
     base = datetime.fromisoformat(day).replace(tzinfo=timezone.utc)
-    handles = {
-        i: (day_dir / f"part-{i:05d}.jsonl").open("w")
-        for i in range(cfg.partitions)
-    }
+    # One writer per (region, centre, partition). Hive-style directories so
+    # a query for one region reads one directory rather than filtering the
+    # day after loading it.
+    handles = {}
+    for region in REGIONS:
+        for centre in CENTRES:
+            leaf = day_dir / f"region={region}" / f"centre={centre}"
+            leaf.mkdir(parents=True, exist_ok=True)
+            for i in range(cfg.partitions):
+                handles[(region, centre, i)] = (leaf / f"part-{i:05d}.jsonl").open("w")
     labels = (day_dir / "_LABELS.jsonl").open("w")
     counts = {"total": 0, "with_signal": 0, "with_attack": 0, "with_pii": 0, "with_conflict": 0}
 
@@ -185,16 +195,20 @@ def generate(n_calls: int = 4000, day: str = "2026-08-22", seed: int = 7) -> Pat
 
             add("agent", rng.choice(SMALL_TALK))
 
+            region = rng.choice(REGIONS)
+            centre = rng.choice(CENTRES)
             record = {
                 "call_id": call_id,
                 "customer_id": customer_id,
                 "timestamp": ts,
-                "region": rng.choice(REGIONS),
+                "region": region,
+                "centre": centre,
                 "channel": rng.choice(CHANNELS),
                 "product_hint": product_hint,
                 "turns": turns,
             }
-            handles[i % cfg.partitions].write(json.dumps(record) + "\n")
+            handles[(region, centre, i % cfg.partitions)].write(
+                json.dumps(record) + "\n")
             # Ground truth lives in a sidecar, never in the call record. If it
             # travelled with the data the router could read its own answer, and
             # the eval would measure nothing.
@@ -215,6 +229,8 @@ def generate(n_calls: int = 4000, day: str = "2026-08-22", seed: int = 7) -> Pat
 
     manifest = {
         "date": day,
+        "regions": REGIONS,
+        "centres": CENTRES,
         "partitions": cfg.partitions,
         "counts": counts,
         "generated_at": datetime.now(timezone.utc).isoformat(),

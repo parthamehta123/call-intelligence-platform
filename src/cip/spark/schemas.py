@@ -28,6 +28,7 @@ CALL = StructType([
     StructField("customer_id", StringType(), False),
     StructField("timestamp", StringType(), False),
     StructField("region", StringType(), False),
+    StructField("centre", StringType(), True),
     StructField("channel", StringType(), False),
     StructField("product_hint", StringType(), True),
     StructField("turns", ArrayType(TURN), False),

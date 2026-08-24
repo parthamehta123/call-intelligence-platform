@@ -36,7 +36,8 @@ class CallRecord:
     customer_id: str
     timestamp: str
     region: str
-    channel: str
+    centre: str = ""
+    channel: str = ""
     # SKU the support case was opened against. Structured, trusted metadata --
     # customers routinely never say the product name out loud.
     product_hint: str | None = None

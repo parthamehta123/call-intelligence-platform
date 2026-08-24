@@ -35,11 +35,44 @@ def _is_boundary(text: str) -> bool:
     return any(marker in lowered for marker in TOPIC_SHIFT)
 
 
+def _semantic_boundary(previous: str, current: str) -> bool:
+    """True when two adjacent customer turns are about different things.
+
+    Lexical markers ("another thing", "by the way") catch only the polite
+    half of topic changes. Callers frequently just start talking about
+    something else, and a chunk straddling two complaints yields one
+    confused extraction instead of two clean ones.
+
+    Only meaningful with a real encoder: the hashed backend's similarity is
+    lexical overlap wearing a different metric, so it would split on
+    vocabulary rather than topic. With `hashed` this returns False and the
+    lexical markers carry, which is the previous behaviour.
+    """
+    from ..config import CONFIG
+
+    if CONFIG.embedder == "hashed" or not previous.strip() or not current.strip():
+        return False
+    try:
+        from ..retrieval import cosine, embed_many
+
+        first, second = embed_many([previous, current])
+        return cosine(first, second) < CONFIG.topic_similarity_floor
+    except Exception:
+        # A missing model must not silently stop segmentation.
+        return False
+
+
 def segment_call(call: CallRecord) -> list[Segment]:
     groups: list[list[dict]] = [[]]
+    last_customer = ""
     for turn in call.turns:
-        if turn["speaker"] == "customer" and _is_boundary(turn["text"]) and groups[-1]:
-            groups.append([])
+        if turn["speaker"] == "customer" and groups[-1]:
+            changed = _is_boundary(turn["text"]) or _semantic_boundary(
+                last_customer, turn["text"])
+            if changed:
+                groups.append([])
+        if turn["speaker"] == "customer":
+            last_customer = turn["text"]
         groups[-1].append(turn)
         # Keep segments bounded so one rambling call cannot blow up a prompt.
         if sum(len(t["text"]) for t in groups[-1]) > CONFIG.max_segment_chars:
