@@ -1,5 +1,6 @@
 .PHONY: demo run generate status redteam test ask clean wheel \
-	eval-router eval-retrieval eval-retrieval-real eval-retrieval-judge eval-attribution \
+	eval-router eval-retrieval eval-retrieval-real eval-retrieval-judge \
+	eval-retrieval-judge-claude eval-attribution \
 	spark-setup spark-test spark-run bundle-validate bundle-deploy bundle-run
 
 PY          := PYTHONPATH=src python3
@@ -45,6 +46,12 @@ HF_ANON := HF_HUB_DISABLE_IMPLICIT_TOKEN=1
 
 eval-retrieval-judge: ## same eval with the local LLM abstention judge
 	$(HF_ANON) CIP_JUDGE=local $(PY) -m cip eval-retrieval
+
+# Requires ANTHROPIC_API_KEY in your environment. Never put the key in this
+# file, in a shell literal, or in a commit -- export it in your own shell.
+eval-retrieval-judge-claude: ## abstention eval with the claude-opus-5 judge
+	@test -n "$$ANTHROPIC_API_KEY" || (echo "ANTHROPIC_API_KEY is not set; export it first" && exit 1)
+	CIP_JUDGE=claude $(PY) -m cip eval-retrieval
 
 eval-retrieval-real:
 	$(HF_ANON) HF_HUB_OFFLINE=1 CIP_EMBEDDER=sentence-transformers $(PY) -c \
