@@ -53,6 +53,14 @@ class Config:
     # with the hashed backend, similarity is lexical overlap in disguise and
     # this floor is left effectively unused.
     dense_floor: float = float(os.environ.get("CIP_DENSE_FLOOR", "0.35"))
+    # Abstention judge. "none" keeps tests deterministic and offline;
+    # "claude" is the production path; "local" runs a small cached instruct
+    # model so the mechanism can be measured without an API key.
+    judge: str = os.environ.get("CIP_JUDGE", "none")
+    judge_model: str = os.environ.get(
+        "CIP_JUDGE_MODEL",
+        "claude-opus-5" if os.environ.get("CIP_JUDGE") == "claude"
+        else "Qwen/Qwen2.5-1.5B-Instruct")
     rrf_k: int = 60                      # reciprocal-rank-fusion constant
     top_k: int = 5
 

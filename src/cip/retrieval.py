@@ -270,7 +270,18 @@ def hybrid_search(query: str, top_k: int | None = None,
         entry["similarity"] = round(similarity, 3)
         results.append(entry)
     results.sort(key=lambda r: -r["score"])
-    return results[:top_k]
+    results = results[:top_k]
+
+    # The judge runs last, on the ranked shortlist only. Asking it about
+    # every candidate would multiply cost by the corpus; asking it about the
+    # documents actually about to be cited bounds the work at top_k per
+    # query. It can only remove -- it never reorders and never adds.
+    if CONFIG.judge != "none":
+        from .judge import judge as judge_relevance
+
+        results = [r for r in results
+                   if judge_relevance(query, f"{r['title']}. {r['body']}")]
+    return results
 
 
 # A term in more than this share of the corpus tells you nothing about

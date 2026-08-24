@@ -111,9 +111,36 @@ makes them unanswerable is that the specific attribute asked about is
 absent from the corpus — a claim-level judgement, not a similarity one. No
 amount of threshold tuning turns a similarity score into that judgement.
 
-What would work: an LLM judge over the retrieved context, asked directly
-whether the document answers the question. That is available through the
-Claude backend and is the honest next step.
+**4 · An LLM judge** — asking directly whether the document answers the
+question — is the only mechanism that works, and it is now built
+(`src/cip/judge.py`, `CIP_JUDGE=claude|local`). It runs last, on the ranked
+shortlist only, so cost is bounded at top_k per query, and it can only
+remove documents: it never reorders and never adds.
+
+Measured with `Qwen2.5-1.5B-Instruct` running locally:
+
+| prompt | Recall@5 | abstention |
+|---|---|---|
+| judge off | 0.758 | 1/2 |
+| leaning to "no" | **0.091** | **2/2** |
+| balanced | 0.758 | 1/2 |
+
+The first prompt told the model "a document about the right product but the
+wrong topic does NOT answer it". It achieved perfect abstention by
+rejecting nearly everything — 90% of correct answers with it.
+
+The second is balanced, costs no recall, and is genuinely discriminating on
+a direct probe (5/6, rejecting both warranty questions while keeping all
+three real answers). It still misses the IPv6 case, where "do you support
+IPv6" against an overview listing "supported firmware versions" is a
+defensible yes for a small model.
+
+**The finding is the sensitivity, not the score.** A rewording moved
+Recall@5 from 0.091 to 0.758. A 1.5B model largely follows the prompt's
+lean rather than judging the document, which is precisely the argument for
+a stronger judge. The `claude-opus-5` path is written with
+schema-constrained output and **is not measured here** — this environment
+has no Anthropic credentials, so treat it as untested code.
 
 ### The tradeoff that is actually shipped
 

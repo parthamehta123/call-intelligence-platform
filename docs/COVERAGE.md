@@ -87,17 +87,18 @@ is marked plainly.
 | Router quality (precision / recall / threshold sweep) | **Built** — measured on two labelled sets, with a CI regression gate | `src/cip/eval/`, `docs/EVAL.md` |
 | Retrieval quality (Recall@K, MRR, nDCG, routing, abstention) | **Built** — labelled query set, leg ablation, CI floors | `src/cip/eval/retrieval_eval.py`, `docs/RETRIEVAL.md` |
 | Groundedness of generated answers | **Not built** — trivially 1.0 for the offline agent; needs an LLM judge with the Claude backend | `docs/RETRIEVAL.md` |
+| Abstention judge | **Partial** — built with `claude` and `local` backends and wired into retrieval; the local 1.5B judge is too prompt-sensitive to rely on, and the Claude path is unmeasured here | `src/cip/judge.py`, `docs/RETRIEVAL.md` |
 
 ## The six that are genuinely missing
 
 Ranked by how much they matter to the architecture's claims:
 
-1. **Abstention.** Three mechanisms were measured and none separates
-   answerable from unanswerable questions: rerank score, semantic
-   similarity, and a cross-encoder all overlap, because the unanswerable
-   queries are topically adjacent and the missing piece is a *claim-level*
-   judgement. An LLM judge over retrieved context is the honest next step
-   (`docs/RETRIEVAL.md`). The *router* is separately measured
+1. **A judge strong enough to trust.** The LLM judge is built and is the
+   only mechanism that discriminates topically-adjacent unanswerable
+   questions, but measured with a local 1.5B model a single prompt rewrite
+   moved Recall@5 from 0.091 to 0.758 — it follows the prompt's lean more
+   than the document. The `claude-opus-5` path is written and unmeasured
+   (no credentials here). The *router* is separately measured
    (`docs/EVAL.md`): precision 0.977 / recall 1.000 on 4,000 generated segments
    (a saturated set), 0.733 / 0.917 on 32 hand-written hard cases, with a
    CI floor.
