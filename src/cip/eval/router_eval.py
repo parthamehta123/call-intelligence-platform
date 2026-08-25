@@ -10,6 +10,13 @@ So the threshold sweep is framed as the trade it actually is:
 
     recall  -> how much product knowledge survives
     kept%   -> what fraction of 10 TB/day you pay a model to read
+
+Injections are scored on a third channel rather than as negatives. The
+router forwarding one is correct -- a segment it drops never reaches taint
+tracking and is never recorded as an attack -- so charging it against
+precision would tune the funnel directly against the security design. See
+`attack_recall`, which is the number that falls silently when the funnel
+is tuned for cost alone.
 """
 
 from __future__ import annotations
@@ -31,6 +38,17 @@ class Metrics:
     fn: int = 0
     false_negatives: list[EvalCase] = field(default_factory=list)
     false_positives: list[EvalCase] = field(default_factory=list)
+    # The attack channel, scored separately -- see `attack_recall`. Counts
+    # every segment carrying a payload, including those that also carry a
+    # real claim.
+    attack_kept: int = 0
+    attack_dropped: int = 0
+    attacks_dropped: list[EvalCase] = field(default_factory=list)
+    # Attack-*only* segments. Kept apart from the counters above because
+    # those overlap the signal classes, and mixing them into precision or
+    # kept% would count the same segment twice.
+    attack_only_kept: int = 0
+    attack_only_dropped: int = 0
 
     @property
     def precision(self) -> float:
@@ -46,10 +64,34 @@ class Metrics:
         return 2 * p * r / (p + r) if (p + r) else 0.0
 
     @property
+    def attack_recall(self) -> float:
+        """Share of injection payloads the router forwards.
+
+        Wanted high, for the opposite reason to signal recall: a dropped
+        injection is not a saved inference call, it is an attack that never
+        reached taint tracking and was never recorded. This is the number
+        that goes down silently when the funnel is tuned for cost.
+        """
+        total = self.attack_kept + self.attack_dropped
+        return self.attack_kept / total if total else 1.0
+
+    @property
+    def precision_charging_attacks(self) -> float:
+        """Precision if forwarded attacks were counted as false alarms.
+
+        Reported alongside `precision` so the gain from making attacks a
+        third class stays visible rather than being absorbed silently.
+        """
+        fp = self.fp + self.attack_only_kept
+        return self.tp / (self.tp + fp) if (self.tp + fp) else 1.0
+
+    @property
     def kept_fraction(self) -> float:
         """Share of all segments sent to the model -- the cost driver."""
-        total = self.tp + self.fp + self.tn + self.fn
-        return (self.tp + self.fp) / total if total else 0.0
+        total = (self.tp + self.fp + self.tn + self.fn
+                 + self.attack_only_kept + self.attack_only_dropped)
+        return ((self.tp + self.fp + self.attack_only_kept) / total
+                if total else 0.0)
 
     def as_row(self) -> str:
         # Recall to 4 dp on purpose: 0.9499 and 0.9500 look identical at 3 dp
@@ -66,6 +108,26 @@ def evaluate(cases: Sequence[EvalCase], threshold: float,
         if case.ambiguous and not include_ambiguous:
             continue
         predicted = score_segment(case.segment) >= threshold
+
+        # The attack channel is scored on every segment carrying a payload,
+        # including the 19 that also carry a real claim -- the security
+        # stage must see those too, so they count here as well as below.
+        if case.carries_attack:
+            if predicted:
+                metrics.attack_kept += 1
+            else:
+                metrics.attack_dropped += 1
+                metrics.attacks_dropped.append(case)
+
+        # Attack-only segments are not scored for product signal: keeping
+        # one is correct routing, not a false alarm.
+        if case.expected == "attack":
+            if predicted:
+                metrics.attack_only_kept += 1
+            else:
+                metrics.attack_only_dropped += 1
+            continue
+
         if predicted and case.label:
             metrics.tp += 1
         elif predicted and not case.label:
@@ -104,7 +166,11 @@ def by_category(cases: Sequence[EvalCase], threshold: float) -> dict[str, tuple[
     for case in cases:
         predicted = score_segment(case.segment) >= threshold
         counts[case.category][1] += 1
-        if predicted != bool(case.label):
+        # For the attack class the error is the opposite one: an injection
+        # the router *drops* is the failure, not one it forwards.
+        wrong = (not predicted) if case.expected == "attack" else (
+            predicted != bool(case.label))
+        if wrong:
             counts[case.category][0] += 1
     return {k: (v[0], v[1]) for k, v in sorted(counts.items())}
 
@@ -118,6 +184,19 @@ def report(cases: Sequence[EvalCase], title: str, threshold: float) -> str:
         f"F1 {current.f1:.3f}",
         f"  kept {current.kept_fraction:.1%} of segments   "
         f"missed {current.fn}   false alarms {current.fp}",
+    ]
+    if current.attack_kept or current.attack_dropped:
+        total_attacks = current.attack_kept + current.attack_dropped
+        lines += [
+            "",
+            "attack channel (injection payloads -- forwarding is correct):",
+            f"  routed to security {current.attack_kept}/{total_attacks}"
+            f"   ({current.attack_recall:.1%})"
+            f"   dropped silently {current.attack_dropped}",
+            f"  precision if these were charged as false alarms: "
+            f"{current.precision_charging_attacks:.3f}",
+        ]
+    lines += [
         "",
         "threshold sweep:",
         "thresh  precision    recall      F1     kept  miss  f.pos",
@@ -143,6 +222,12 @@ def report(cases: Sequence[EvalCase], title: str, threshold: float) -> str:
         lines += [f"  {k:<28} {e}/{t}" for k, (e, t) in errors.items()]
     else:
         lines.append("no errors by category")
+
+    if current.attacks_dropped:
+        lines += ["", "injections dropped before the security stage:"]
+        for case in current.attacks_dropped[:6]:
+            text = case.segment.text.replace("\n", " ")[:88]
+            lines.append(f"  [{case.category}] {text}")
 
     if current.false_negatives:
         lines += ["", "missed signal (unrecoverable downstream):"]

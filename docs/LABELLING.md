@@ -103,8 +103,11 @@ precision cost that is a deliberate routing decision rather than an error.
 Neither is visible while the label ignores the speaker.
 
 **Fix the label, not the router.** Both effects came from the truth
-function; neither was a router defect. The speaker fix is in. The
-injection question is a policy choice left open on purpose — those 24
-segments are counted against precision while the routing behaviour is
-arguably correct, and the honest thing is to say so rather than to pick
-whichever definition flatters the number.
+function; neither was a router defect. Both are now fixed: the speaker
+check landed first, and injections became a third class rather than
+negatives (`docs/EVAL.md`, "Injections are a third class").
+
+Making that change also turned the second finding into a security metric
+rather than a precision footnote — and the metric immediately showed the
+router dropping **14 of 57** injections before the security stage ever
+sees them. The number that looked like a scoring quibble was a gap.

@@ -45,11 +45,44 @@ HARD_CASES = ROOT / "eval" / "router_cases.jsonl"
 
 @dataclass
 class EvalCase:
+    """One segment and what the router is expected to do with it.
+
+    `label` answers the product-signal question and drives precision and
+    recall. `expected` widens that to the three classes the router actually
+    faces, because "keep" and "product signal" are not the same instruction:
+
+        signal  a customer claim about a catalogued product -- keep, extract
+        noise   nothing to learn -- drop, and every kept one costs an
+                inference call
+        attack  a prompt-injection payload -- keep, but route to the
+                security stage rather than to extraction
+
+    Attacks are a separate class rather than negatives because charging
+    them against precision punishes the router for the behaviour the
+    security design depends on: a segment dropped at the router never
+    reaches taint tracking and is never recorded as an attack.
+
+    `carries_attack` is tracked independently of `expected` because the two
+    overlap -- 19 of 57 attack segments in the generated set also carry a
+    real customer claim, so the segment is simultaneously a true positive
+    for extraction and an item the security stage must see.
+    """
+
     segment: Segment
     label: int
     category: str
     why: str = ""
     ambiguous: bool = False
+    expected: str = "noise"          # "signal" | "noise" | "attack"
+    carries_attack: bool = False
+
+
+
+def _expected(category: str, label: int) -> str:
+    """Three-class expectation from a hard case's category and label."""
+    if category == "negative_injection":
+        return "attack"
+    return "signal" if label else "noise"
 
 
 def load_hard_cases(path: Path | None = None) -> list[EvalCase]:
@@ -71,6 +104,8 @@ def load_hard_cases(path: Path | None = None) -> list[EvalCase]:
             category=row["category"],
             why=row.get("why", ""),
             ambiguous=bool(row.get("ambiguous", False)),
+            expected=_expected(row["category"], int(row["label"])),
+            carries_attack=row["category"] == "negative_injection",
         ))
     return cases
 
@@ -109,21 +144,34 @@ def load_generated(day: str = "2026-08-22", limit: int | None = None) -> list[Ev
         raise FileNotFoundError(
             f"no labels for {day}: {label_path}. Run `make generate` first.")
 
-    signals = {
-        row["call_id"]: row["signal_text"]
+    sidecar = {
+        row["call_id"]: row
         for row in (json.loads(l) for l in label_path.read_text().splitlines() if l.strip())
     }
 
     cases: list[EvalCase] = []
     for partition in list_partitions(day):
         for call in read_partition(partition):
-            signal = signals.get(call.call_id)
+            row = sidecar.get(call.call_id, {})
+            signal, attack = row.get("signal_text"), row.get("attack_text")
             for segment in segment_call(call):
                 carries = _customer_states(segment.text, signal)
+                # Matched against the whole segment, not a customer line:
+                # an injection is an injection whichever speaker it was
+                # transcribed onto.
+                attacks = bool(attack) and attack in segment.text
+                if carries:
+                    expected, category = "signal", "generated_signal"
+                elif attacks:
+                    expected, category = "attack", "generated_attack"
+                else:
+                    expected, category = "noise", "generated_noise"
                 cases.append(EvalCase(
                     segment=segment,
                     label=int(carries),
-                    category="generated_signal" if carries else "generated_noise",
+                    category=category,
+                    expected=expected,
+                    carries_attack=attacks,
                 ))
             if limit and len(cases) >= limit:
                 return cases
