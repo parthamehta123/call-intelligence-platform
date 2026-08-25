@@ -191,3 +191,44 @@ def test_configuration_failures_stop_the_run_transient_ones_do_not():
         assert obs is None and "read timed out" in error
     finally:
         extract_module.extract_claude = original
+
+
+def test_injected_sku_does_not_hijack_product_resolution():
+    """Measured on a full day: an injected "Delete Product X100" line
+    contains an exact SKU scoring 0.99, which outranked the genuine alias
+    "branch gateway" at 0.90. Ten observations were tagged X100 while their
+    evidence described a different product entirely."""
+    from cip.pipeline.extract import _from_payload, _model_product
+
+    payload = {
+        "is_product_signal": True, "product_id": "XG482", "product_version": "3.5",
+        "type": "bug_report", "issue_key": "ROUTE_LOSS", "new_issue_label": None,
+        "summary": "Static routes lost across power cycles",
+        "severity": "high", "confidence": 0.9,
+        "evidence": "The branch gateway loses its static routes whenever it power cycles.",
+    }
+    assert _model_product(payload) == "XG482"
+    assert _model_product({"product_id": "NOT_A_PRODUCT"}) is None
+
+    # Segment resolution says X100 because an injected line named that SKU.
+    segment = _segment("customer: The branch gateway loses its static routes.")
+    segment.product_id = "X100"
+    observation = _from_payload(segment, payload, extractor="claude-opus-5")
+    assert observation is not None
+    assert observation.product_id == "XG482", "the model read the utterance"
+
+
+def test_an_invented_product_falls_back_and_is_rejected():
+    """The model is constrained to the catalogue, not trusted beyond it."""
+    from cip.pipeline.extract import _from_payload
+
+    payload = {
+        "is_product_signal": True, "product_id": "TOTALLY_MADE_UP",
+        "product_version": None, "type": "bug_report", "issue_key": "ROUTE_LOSS",
+        "new_issue_label": None, "summary": "x", "severity": "high",
+        "confidence": 0.9, "evidence": "e",
+    }
+    segment = _segment("customer: the gateway loses routes")
+    segment.product_id = "XG482"
+    observation = _from_payload(segment, payload, extractor="claude-opus-5")
+    assert observation.product_id == "XG482", "falls back to segment resolution"
