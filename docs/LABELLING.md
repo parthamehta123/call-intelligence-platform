@@ -56,6 +56,31 @@ Contested items are **excluded** from the export rather than resolved by
 majority vote. An eval built on the cases people could not agree about
 measures the ambiguity, not the router.
 
+## The session that recorded nothing
+
+A real 50-item session printed every item in one burst and finished with
+`saved 0 labels` and exit 0. stdin was not a terminal, so `input()`
+returned `""` for each item, and `""` fell through the `not in ("y", "n")`
+branch as a silent skip. Fifty judgements were discarded and the run
+looked normal.
+
+Three things were wrong, and all three are fixed:
+
+* **`""` was a skip.** Only `s` is a skip now; anything unrecognised
+  re-prompts. A mistyped key used to discard that item's judgement with no
+  indication.
+* **No terminal, no refusal.** An interactive session now checks
+  `stdin.isatty()` and refuses before printing anything — showing the pool
+  to nobody spends its blindness for nothing.
+* **Zero labels exited 0.** It now raises `LabellingAborted` and the CLI
+  exits 1. A session that captured no judgement has not happened, and must
+  not be indistinguishable from one that worked.
+
+Worth noting where this sits: the eval harness is full of guards against
+runs that report success having done nothing, and the labelling tool —
+added to make the eval trustworthy — had the same bug. The tool that
+checks the work needs checking too.
+
 ## What it does not do
 
 It does not make the labels good. It makes them *somebody else's*, records

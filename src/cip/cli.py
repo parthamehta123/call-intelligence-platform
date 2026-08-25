@@ -137,8 +137,17 @@ def _cmd_eval_groundedness(args) -> int:
 
 
 def _cmd_label(args) -> int:
-    from .labeling.cli import label_session
-    return 0 if label_session(args.kind, args.annotator, limit=args.limit) >= 0 else 1
+    from .labeling.cli import LabellingAborted, label_session
+
+    try:
+        label_session(args.kind, args.annotator, limit=args.limit)
+    except LabellingAborted as exc:
+        # Non-zero, and said plainly. A session that recorded nothing used
+        # to print `saved 0 labels` and exit 0, which is indistinguishable
+        # from a session that worked.
+        print(f"\nlabelling aborted: {exc}")
+        return 1
+    return 0
 
 
 def _cmd_label_status(args) -> int:

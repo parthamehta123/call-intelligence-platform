@@ -8,6 +8,7 @@ thinks agrees with it.
 
 from __future__ import annotations
 
+import sys
 import time
 
 from .pool import PoolItem, build_retrieval_pool, build_router_pool
@@ -31,9 +32,31 @@ question?
 }
 
 
+class LabellingAborted(RuntimeError):
+    """Raised rather than finishing a session that recorded nothing."""
+
+
 def label_session(kind: str, annotator: str, limit: int = 50,
                   store: LabelStore | None = None,
-                  pool: list[PoolItem] | None = None) -> int:
+                  pool: list[PoolItem] | None = None,
+                  ask=None) -> int:
+    """Run an interactive labelling session.
+
+    `ask` exists for tests. When it is None the session is interactive and
+    refuses to run without a terminal -- see the note on the tty check.
+    """
+    interactive = ask is None
+    if interactive and not sys.stdin.isatty():
+        # A session driven by a non-terminal stdin reads "" for every item,
+        # which the loop below used to treat as a skip. The result was 50
+        # prompts printed in one burst, every judgement discarded, and
+        # `saved 0 labels` reported as a normal finish. Refusing is the
+        # only safe behaviour: there is no answer to record, and printing
+        # the items anyway burns the pool's blindness for nothing.
+        raise LabellingAborted(
+            "labelling needs a terminal; stdin is not a tty. Run it directly:\n"
+            f"  make label-{kind} ANNOTATOR=<name>")
+    ask = ask or (lambda prompt: input(prompt))
     store = store or LabelStore()
     if pool is None:
         pool = (build_router_pool() if kind == "router"
@@ -53,14 +76,13 @@ def label_session(kind: str, annotator: str, limit: int = 50,
         print("-" * 68)
         print(f"[{index}/{len(queue)}]  {item.prompt()[:600]}")
         started = time.time()
-        try:
-            answer = input("  yes/no/skip? [y/n/s/q] ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
+        answer = _ask_until_valid(ask)
+        if answer is None:                      # EOF, interrupt, or refusal
             print("\nstopping; labels so far are saved.")
             break
         if answer == "q":
             break
-        if answer not in ("y", "n"):
+        if answer == "s":
             continue
         store.append(Label(item_id=item.item_id, kind=kind,
                            value=1 if answer == "y" else 0,
@@ -69,8 +91,45 @@ def label_session(kind: str, annotator: str, limit: int = 50,
                            payload=item.payload))
         done += 1
 
+    if not done:
+        # The failure this guards against reported success: every item
+        # displayed, nothing recorded, exit 0. A labelling session that
+        # captured no judgement has not happened.
+        raise LabellingAborted(
+            f"{len(queue)} items shown and 0 labels recorded. Nothing was "
+            f"written to {store.path}.")
+
     print(f"\nsaved {done} labels to {store.path}")
     return done
+
+
+VALID = ("y", "n", "s", "q")
+
+
+def _ask_until_valid(ask, tries: int = 3) -> str | None:
+    """One keystroke, or None to stop the session.
+
+    Re-prompts instead of skipping. An unrecognised answer used to fall
+    through to `continue`, so a mistyped key silently discarded that item's
+    judgement and the annotator had no way to tell.
+    """
+    blanks = 0
+    while True:
+        try:
+            answer = ask("  yes/no/skip? [y/n/s/q] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            return None
+        if answer in VALID:
+            return answer
+        if not answer:
+            blanks += 1
+            # An input source that returns "" forever is not a person
+            # hitting return; it is a stream with nothing in it.
+            if blanks >= tries:
+                return None
+            print("  (no answer read) y = yes, n = no, s = skip, q = stop")
+        else:
+            print(f"  {answer!r} is not one of y / n / s / q")
 
 
 def _default_queries() -> list[str]:

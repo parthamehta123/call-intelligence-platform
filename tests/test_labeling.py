@@ -101,3 +101,66 @@ def test_low_agreement_says_to_fix_the_guidelines_not_collect_more(store):
         store.append(Label(item_id=f"i{i}", kind="router", value=i % 2, annotator="a"))
         store.append(Label(item_id=f"i{i}", kind="router", value=(i + 1) % 2, annotator="b"))
     assert "rewrite the guidelines" in agreement(store).interpretation
+
+
+# --- a session that records nothing must not report success ----------------
+#
+# A real session printed all 50 items in one burst, recorded none of them,
+# and finished with `saved 0 labels` and exit 0. stdin was not a terminal,
+# so `input()` returned "" for every item, and "" fell through the
+# `not in ("y", "n")` branch as a silent skip. The annotator's judgements
+# were discarded with no indication anything had gone wrong.
+
+def _pool(n=5):
+    from cip.labeling.pool import PoolItem
+
+    return [PoolItem(item_id=f"i{k}", kind="router",
+                     payload={"text": f"customer: seg {k}"}) for k in range(n)]
+
+
+def _store(tmp_path):
+    from cip.labeling.store import LabelStore
+
+    return LabelStore(tmp_path / "labels.jsonl")
+
+
+def test_blank_answers_abort_instead_of_skipping_every_item(tmp_path):
+    from cip.labeling.cli import LabellingAborted, label_session
+
+    store = _store(tmp_path)
+    with pytest.raises(LabellingAborted):
+        label_session("router", "t", store=store, pool=_pool(), ask=lambda p: "")
+    assert not store.path.exists(), "nothing should have been written"
+
+
+def test_a_session_of_only_skips_also_aborts(tmp_path):
+    """Zero labels is zero labels, however it was reached."""
+    from cip.labeling.cli import LabellingAborted, label_session
+
+    with pytest.raises(LabellingAborted):
+        label_session("router", "t", store=_store(tmp_path),
+                      pool=_pool(), ask=lambda p: "s")
+
+
+def test_an_unrecognised_key_re_prompts_rather_than_discarding_the_item(tmp_path):
+    answers = iter(["x", "y", "n", "s", "q"])
+    from cip.labeling.cli import label_session
+
+    store = _store(tmp_path)
+    done = label_session("router", "t", store=store, pool=_pool(),
+                         ask=lambda p: next(answers))
+    # 'x' re-prompted and the retry ('y') was recorded, so the first item
+    # was not lost: two labels from y and n.
+    assert done == 2
+    assert [l.value for l in store.all()] == [1, 0]
+
+
+def test_interactive_session_refuses_a_non_tty(monkeypatch, tmp_path):
+    """The condition that caused the loss, refused at the door."""
+    import sys
+
+    from cip.labeling.cli import LabellingAborted, label_session
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False, raising=False)
+    with pytest.raises(LabellingAborted, match="tty"):
+        label_session("router", "t", store=_store(tmp_path), pool=_pool())
