@@ -166,8 +166,16 @@ was told to ignore. The model's `product_id` is now preferred **when the
 catalogue contains it**, falling back to segment resolution otherwise, so
 an invented product still cannot enter.
 
-**Not yet re-measured.** The fix is unit-tested and has not been through
-another full paid day.
+**Not yet re-measured.** The fix is unit-tested. A rerun was attempted and
+stopped on an exhausted credit balance: the ~1,191-call day plus the
+200-segment run had consumed the credits added for them. That the budget
+lasted roughly 1,400 calls and no further is weak corroboration of the
+$7.27 estimate above, and no substitute for the run reporting its own
+figure -- which is exactly what the usage capture now makes it do.
+
+Two things are therefore staged and unverified at scale: preferring the
+model's catalogue-validated `product_id`, and the cost report itself. One
+~$7 day measures both.
 
 ## Earlier: the full day did not complete
 
