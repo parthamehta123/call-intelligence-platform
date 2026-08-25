@@ -171,17 +171,24 @@ make bundle-run             # runs it once, streaming output
 Both of the following are required, and both exist for the same reason:
 
 ```bash
-databricks bundle deploy -t prod \
-  --var="run_as_service_principal=<application-id>"
+make prod-preflight SP=<application-id>          # does it exist?
+make bundle-deploy TARGET=prod SP=<application-id>
+make bundle-run    TARGET=prod SP=<application-id>
 ```
 
 * **`run_as`** takes a service principal *application ID* (a UUID) — not an
   email, not a display name. A job owned by a person dies the day that
   person leaves. The default is the invalid sentinel
-  `SET-ME-service-principal-application-id`, which appears verbatim in the
-  failure so it points back at the config. A variable with *no* default is
-  not an option: Asset Bundles resolve every declared variable for every
+  `SET-ME-service-principal-application-id`. A variable with *no* default
+  is not an option: Asset Bundles resolve every declared variable for every
   target, so it would break `validate` on dev too.
+
+  Do **not** rely on the resulting error to explain itself. The sentinel
+  appears in the deployment path, but the workspace reports
+  `DIRECTORY_PROTECTED: Folder Users is protected` — which reads as a
+  permissions problem and sends people to ask an admin for rights they do
+  not need. `make bundle-deploy TARGET=prod` therefore refuses locally,
+  before the wheel is even built.
 
 * **`workspace.root_path`** is pinned to that service principal's home.
   Left unset, the path derives from the deploying user and two engineers
@@ -193,11 +200,42 @@ databricks bundle deploy -t prod \
   boundary this project is built on.
 
 Grant that service principal exactly the objects listed above and nothing
-else. **This has not been verified end to end** — the workspace used for
-development has no service principals, and creating an identity is not
-something this repo should do on an operator's behalf. `validate -t prod`
-resolves cleanly up to the point of needing a real principal's home
-directory.
+else.
+
+#### Two things `validate` does not tell you
+
+**It does not check that the service principal exists.** A typo'd or
+retired application ID validates clean and fails at deploy, after the
+wheel is built and uploaded. `make prod-preflight SP=<id>` asks the
+workspace directly, which is the only way to find out cheaply.
+
+**Until recently it did not check the prod target at all.** `bundle
+validate` calls workspace `mkdirs` on the deployment root, and a root
+under a nonexistent service principal's home fails with
+`DIRECTORY_PROTECTED` *before* any job definition is read. With no service
+principal in the workspace, every `validate -t prod` aborted on the first
+API call — so the prod job definitions had never been checked, and an
+error in them would have surfaced only during a real production deploy.
+`root_path` is now the `prod_root_path` variable so the rest can be
+validated without an identity:
+
+```bash
+make bundle-validate-prod    # Validation OK!
+```
+
+That passes. Everything in the prod target except the deployment root is
+confirmed sound.
+
+**Still unverified:** an actual prod deploy and run. That needs a service
+principal, and creating an identity in someone's workspace is not
+something this repo should do on an operator's behalf:
+
+```bash
+databricks service-principals create --display-name cip-prod-writer
+```
+
+Then grant it exactly the objects listed above, and run the three commands
+at the top of this section.
 
 `databricks.yml` builds the wheel from this repo and attaches it to every
 task, which is what makes `import cip` work inside the Python workers.

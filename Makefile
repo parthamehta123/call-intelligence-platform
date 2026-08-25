@@ -3,7 +3,8 @@
 	eval-identifiers eval-audio eval-rerank eval-groundedness graph \
 	label-router label-retrieval label-status \
 	eval-retrieval-judge-claude eval-attribution \
-	spark-setup spark-test spark-run bundle-validate bundle-deploy bundle-run
+	spark-setup spark-test spark-run bundle-validate bundle-validate-prod \
+	prod-preflight prod-guard bundle-deploy bundle-run
 
 PY          := PYTHONPATH=src python3
 SPARK_PY    := .venv-spark/bin/python
@@ -106,18 +107,58 @@ spark-run:
 	rm -rf data/spark-warehouse metastore_db derby.log
 	JAVA_HOME=$(JAVA11) $(SPARK_PY) scripts/run_spark_local.py
 
+SENTINEL := SET-ME-service-principal-application-id
+
 bundle-validate:
 	databricks bundle validate -t $(TARGET)
+
+# Validate the prod target's job definitions without a service principal.
+# `bundle validate` calls workspace mkdirs on the deployment root, so a
+# root under a nonexistent SP home aborts before anything else is read --
+# which meant prod was never structurally checked at all. Pointing the root
+# at the caller's own home validates everything except the root itself.
+bundle-validate-prod:
+	databricks bundle validate -t prod \
+	  --var="prod_root_path=/Workspace/Users/$$(databricks current-user me --output json | python3 -c 'import json,sys; print(json.load(sys.stdin)["userName"])')/.bundle/call-intelligence-platform/prod-validate"
+
+# `bundle validate` does NOT check that the service principal exists, so a
+# wrong application ID passes every local check and fails at deploy, after
+# the wheel has been built and uploaded. Ask the workspace first.
+prod-preflight:
+	@test "$(SP)" != "" || { echo "usage: make prod-preflight SP=<application-id>"; exit 2; }
+	@test "$(SP)" != "$(SENTINEL)" || { echo "SP is still the sentinel; pass a real application ID"; exit 2; }
+	@databricks service-principals list --output json \
+	  | python3 -c 'import json,sys; sps=json.load(sys.stdin) or []; \
+	    match=[s for s in sps if s.get("applicationId")=="$(SP)"]; \
+	    print("service principal found:", match[0].get("displayName","<no name>")) if match \
+	    else (print("no service principal with applicationId $(SP) in this workspace.\n" \
+	               "  databricks service-principals list   # shows what exists"), sys.exit(1))'
 
 wheel:
 	rm -rf dist build src/*.egg-info
 	python3 -m build --wheel
 
-bundle-deploy: wheel
-	databricks bundle deploy -t $(TARGET)
+# Listed BEFORE `wheel` so it fails before anything is built. Without the
+# guard a prod deploy with the variable unset builds the wheel, uploads it,
+# and fails against the workspace with `DIRECTORY_PROTECTED: Folder Users
+# is protected` -- an error naming a permissions problem rather than the
+# unset variable, which sends people to ask an admin for rights they do
+# not need.
+prod-guard:
+	@if [ "$(TARGET)" = "prod" ] && [ "$(SP)" = "" ]; then \
+	  echo "prod deploys need the service principal's application ID:"; \
+	  echo "  make prod-preflight SP=<application-id>   # check it exists first"; \
+	  echo "  make bundle-deploy TARGET=prod SP=<application-id>"; \
+	  exit 2; \
+	fi
+
+bundle-deploy: prod-guard wheel
+	databricks bundle deploy -t $(TARGET) \
+	  $(if $(SP),--var="run_as_service_principal=$(SP)",)
 
 bundle-run:
-	databricks bundle run daily_call_intelligence -t $(TARGET)
+	databricks bundle run daily_call_intelligence -t $(TARGET) \
+	  $(if $(SP),--var="run_as_service_principal=$(SP)",)
 
 clean:
 	rm -rf data metastore_db derby.log dist build

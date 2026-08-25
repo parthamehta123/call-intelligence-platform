@@ -48,9 +48,29 @@ variables:
       identity. Databricks Asset Bundles resolve every declared variable for
       every target, so a variable with no default fails `validate` on dev as
       well as prod -- and an empty default would reach the workspace as a
-      blank owner and fail with an error naming nothing. The sentinel shows
-      up verbatim in the failure, which points straight back here.
+      blank owner and fail with an error naming nothing.
+
+      The sentinel appears verbatim in the deployment path, but do not rely
+      on the resulting error to explain itself: the workspace reports
+      `DIRECTORY_PROTECTED: Folder Users is protected`, which reads as a
+      permissions problem and sends people to ask for admin rights. That is
+      why `make bundle-deploy TARGET=prod` refuses locally first, and why
+      `make prod-preflight` exists -- `bundle validate` does NOT check that
+      the service principal exists, so a typo'd application ID validates
+      clean and fails only at deploy.
     default: SET-ME-service-principal-application-id
+  prod_root_path:
+    description: >-
+      Where the prod bundle is deployed. Defaults to the service
+      principal's own home and should not be overridden for a real deploy
+      -- it exists so the prod target can be VALIDATED without a service
+      principal, which is otherwise impossible: bundle validate calls
+      workspace mkdirs on the root path, and a path under a nonexistent
+      user aborts validation before any job definition is checked. The
+      whole target was therefore unvalidated whenever the SP was unset.
+        make bundle-validate-prod
+      overrides this with the caller's own home to check everything else.
+    default: /Workspace/Users/${var.run_as_service_principal}/.bundle/${bundle.name}/${bundle.target}
 
 artifacts:
   cip_wheel:
@@ -184,7 +204,7 @@ targets:
       # supply-chain hole straight through the security boundary this
       # project is built around. The SP's home is restricted to the SP and
       # workspace admins, and is not tied to any individual human.
-      root_path: /Workspace/Users/${var.run_as_service_principal}/.bundle/${bundle.name}/${bundle.target}
+      root_path: ${var.prod_root_path}
     variables:
       catalog: cip
     run_as:
