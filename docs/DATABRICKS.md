@@ -20,6 +20,21 @@ Here is the honest per-stage account, now that the port exists and runs.
 | 4 · extract | `mapInPandas(route_and_extract_batches)` — same `cip.pipeline.extract` | **yes** |
 | security channel | `mapInPandas(scan_for_injections_batches)` → `security_events` | **yes** |
 
+**Verified on dev**, run `Ra492dd2f21`: `injections_detected 57`,
+`injections_inspection_only 14`, `observations 1195` — identical to the
+local run. `security_events` holds 43 rows with `route_reason=both`
+(inspected and extracted) and 14 with `route_reason=injection`
+(inspected only), and the two new `segments` columns evolved additively.
+
+The first attempt failed, and instructively. `Segment.injection_signatures`
+is a list; `asdict()` put it straight into a `StringType` column. pandas
+holds that as dtype `object` without complaint, and every local test
+passed — Arrow rejected it only during serialisation on the cluster, four
+minutes into the run. `_segment_row()` now performs the conversion in one
+place, and `tests/test_security_channel.py` checks emitted rows against
+the declared Spark types so the next such mismatch fails locally in half a
+second instead.
+
 The security channel is a second pass rather than an extra output of the
 extract stage, because `mapInPandas` yields exactly one schema. Locally an
 injection the router forwards for inspection is recorded in the audit log;

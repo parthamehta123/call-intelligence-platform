@@ -73,6 +73,47 @@ def _frame(records: list[dict], columns: list[str]) -> pd.DataFrame:
     return pd.DataFrame(records, columns=columns) if records else pd.DataFrame(columns=columns)
 
 
+def _segment_row(segment: Segment) -> dict:
+    """`Segment` -> a row matching SEGMENT, with list fields flattened.
+
+    `injection_signatures` is a list on the dataclass and a comma-joined
+    string in the table. `asdict()` does not know that, so every stage that
+    built a row by hand shipped a Python list into a StringType column --
+    which pandas accepts as dtype `object`, and Arrow rejects only on the
+    cluster, several minutes into a run. Flattened here so there is one
+    place for the conversion and one place to update when a field is added.
+    """
+    record = asdict(segment)
+    record["injection_signatures"] = ",".join(segment.injection_signatures)
+    record["content_hash"] = _content_hash(segment.text)
+    return record
+
+
+def _segments_from(batch: pd.DataFrame) -> list[Segment]:
+    """Rebuild `Segment`s from a silver batch.
+
+    Shared by all three stages that route: three copies of this constructor
+    is three places for a new field to be forgotten, and a field missing
+    here is silently defaulted rather than raised.
+    """
+    return [
+        Segment(
+            segment_id=row["segment_id"], call_id=row["call_id"],
+            customer_id=row["customer_id"], timestamp=row["timestamp"],
+            region=row["region"], text=row["text"],
+            speaker_mix=dict(_null(row["speaker_mix"]) or {}),
+            customer_turns=int(_num(row.get("customer_turns"), 0)),
+            # Missing means the partition predates diarization capture, so
+            # it is trusted -- consistent with preprocessing treating an
+            # absent per-turn speaker_confidence as 1.0.
+            attribution_confidence=_num(row.get("attribution_confidence"), 1.0),
+            product_hint=_null(row.get("product_hint")), trust=row["trust"],
+            pii_redactions=int(row["pii_redactions"]),
+        )
+        for row in batch.to_dict("records")
+    ]
+
+
 def preprocess_batches(batches: Iterator[pd.DataFrame]) -> Iterator[pd.DataFrame]:
     """Raw calls -> PII-redacted, segmented, untrusted-stamped segments."""
     for batch in batches:
@@ -88,10 +129,7 @@ def preprocess_batches(batches: Iterator[pd.DataFrame]) -> Iterator[pd.DataFrame
                 product_hint=_null(row.get("product_hint")),
                 turns=[dict(t) for t in (turns if turns is not None else [])],
             )
-            for segment in segment_call(call):
-                record = asdict(segment)
-                record["content_hash"] = _content_hash(segment.text)
-                records.append(record)
+            records += [_segment_row(s) for s in segment_call(call)]
         yield _frame(records, SEGMENT_COLUMNS)
 
 
@@ -130,31 +168,6 @@ def make_route_and_extract(*, extractor: str, extract_limit: int = 0,
     return run
 
 
-def _segments_from(batch: pd.DataFrame) -> list[Segment]:
-    """Rebuild `Segment`s from a silver batch.
-
-    Shared by all three stages that route: three copies of this constructor
-    is three places for a new field to be forgotten, and a field missing
-    here is silently defaulted rather than raised.
-    """
-    return [
-        Segment(
-            segment_id=row["segment_id"], call_id=row["call_id"],
-            customer_id=row["customer_id"], timestamp=row["timestamp"],
-            region=row["region"], text=row["text"],
-            speaker_mix=dict(_null(row["speaker_mix"]) or {}),
-            customer_turns=int(_num(row.get("customer_turns"), 0)),
-            # Missing means the partition predates diarization capture, so
-            # it is trusted -- consistent with preprocessing treating an
-            # absent per-turn speaker_confidence as 1.0.
-            attribution_confidence=_num(row.get("attribution_confidence"), 1.0),
-            product_hint=_null(row.get("product_hint")), trust=row["trust"],
-            pii_redactions=int(row["pii_redactions"]),
-        )
-        for row in batch.to_dict("records")
-    ]
-
-
 def route_and_extract_batches(batches: Iterator[pd.DataFrame]) -> Iterator[pd.DataFrame]:
     """Funnel + schema-constrained extraction in a single pass.
 
@@ -175,14 +188,7 @@ def score_relevance_batches(batches: Iterator[pd.DataFrame]) -> Iterator[pd.Data
     """Router only -- used when you want funnel metrics without paying for
     extraction, e.g. tuning the threshold against a labelled sample."""
     for batch in batches:
-        records = [asdict(s) for s in route(_segments_from(batch))]
-        for record in records:
-            record["content_hash"] = _content_hash(record["text"])
-            # Spark has no list column here; the signatures are a flat
-            # string so the routing reason survives into the lake, where
-            # the security channel can be queried without re-running scans.
-            record["injection_signatures"] = ",".join(
-                record.get("injection_signatures") or [])
+        records = [_segment_row(s) for s in route(_segments_from(batch))]
         yield _frame(records, SEGMENT_COLUMNS)
 
 
