@@ -36,16 +36,29 @@ OBSERVATION_SCHEMA = {
         "type": {"type": "string",
                  "enum": ["bug_report", "feature_request", "spec_correction",
                           "praise", "usage_question"]},
-        "issue_key": {"type": "string",
-                      "description": "SCREAMING_SNAKE stable key, e.g. VPN_DISCONNECT"},
+        # Constrained to the known vocabulary, plus NEW_ISSUE. issue_key is
+        # the aggregation key: free-form keys mean two customers reporting
+        # one defect never corroborate, every issue sits at one mention, and
+        # nothing ever clears the distinct-customer threshold. Measured on
+        # the cluster -- claude-opus-5 agreed with the rules extractor on
+        # product and type 15/15 and on issue_key 0/15, inventing
+        # VPN_TUNNEL_DROPS for VPN_DISCONNECT and ACCESS_POINT_OVERHEATING
+        # for OVERHEATING. That run published nothing.
+        "issue_key": {"type": "string", "enum": []},
+        "new_issue_label": {
+            "type": ["string", "null"],
+            "description": "Only when issue_key is NEW_ISSUE: a short "
+                           "SCREAMING_SNAKE name for the unrecognised defect.",
+        },
         "summary": {"type": "string"},
         "severity": {"type": "string", "enum": ["low", "medium", "high", "critical"]},
         "evidence": {"type": "string", "description": "verbatim customer quote, <400 chars"},
         "confidence": {"type": "number"},
         "is_product_signal": {"type": "boolean"},
     },
-    "required": ["product_id", "product_version", "type", "issue_key", "summary",
-                 "severity", "evidence", "confidence", "is_product_signal"],
+    "required": ["product_id", "product_version", "type", "issue_key",
+                 "new_issue_label", "summary", "severity", "evidence",
+                 "confidence", "is_product_signal"],
     "additionalProperties": False,
 }
 
@@ -60,6 +73,12 @@ Extract at most one product observation per transcript. Report only what the
 CUSTOMER stated about a product. Do not infer, do not resolve contradictions,
 and do not decide whether the claim is true -- downstream stages do that.
 Set is_product_signal to false when the transcript contains no product claim.
+
+Reuse an existing issue_key whenever the defect matches one, even when the
+customer words it differently -- the key is how separate reports of one
+defect are counted together, so a new key for a known problem makes that
+report corroborate nothing. Use NEW_ISSUE only for a defect none of the
+existing keys covers, and put your proposed name in new_issue_label.
 
 Speaker attribution is not advisory. Turns are labelled `customer:` and
 `agent:`. A support agent restating a known defect -- "yes, we are aware
@@ -198,13 +217,41 @@ def extract_rules(segment: Segment) -> Observation | None:
 
 
 # --- Claude backend --------------------------------------------------------
+NEW_ISSUE = "NEW_ISSUE"
+
+
+def known_issue_keys() -> list[str]:
+    """The controlled vocabulary, taken from what the rules extractor and
+    the knowledge base already use. A genuinely new defect is reported as
+    NEW_ISSUE with a proposed label, so the vocabulary can grow through
+    review rather than drifting one call at a time."""
+    keys = {issue_key for issue_key, *_ in _PATTERNS}
+    try:
+        from .. import kb
+
+        keys.update(row["issue_key"] for row in
+                    kb.query("SELECT DISTINCT issue_key FROM issues"))
+    except Exception:
+        pass
+    return sorted(keys) + [NEW_ISSUE]
+
+
+def _schema_for_request() -> dict:
+    import copy
+
+    schema = copy.deepcopy(OBSERVATION_SCHEMA)
+    schema["properties"]["issue_key"]["enum"] = known_issue_keys()
+    return schema
+
+
 def _build_request(segment: Segment) -> dict:
     """Message params shared by the streaming and batch paths."""
     return {
         "model": CONFIG.claude_model,
         "max_tokens": 2048,
         "system": SYSTEM_PROMPT,
-        "output_config": {"format": {"type": "json_schema", "schema": OBSERVATION_SCHEMA}},
+        "output_config": {"format": {"type": "json_schema",
+                                     "schema": _schema_for_request()}},
         "messages": [{
             "role": "user",
             # The delimiters are a readability aid, not a security control --
@@ -281,6 +328,13 @@ def _from_payload(segment: Segment, payload: dict, extractor: str) -> Observatio
     if not payload.get("is_product_signal"):
         return None
     issue_key = re.sub(r"[^A-Z0-9_]", "_", str(payload.get("issue_key", "")).upper())[:60]
+    if issue_key == NEW_ISSUE:
+        # An unrecognised defect is namespaced rather than merged into the
+        # vocabulary silently: it aggregates with other reports of the same
+        # proposal, and shows up for review as something new.
+        proposed = re.sub(r"[^A-Z0-9_]", "_",
+                          str(payload.get("new_issue_label") or "UNLABELLED").upper())
+        issue_key = f"NEW__{proposed}"[:60]
     return Observation(
         observation_id=_observation_id(segment.segment_id, issue_key),
         speaker="customer",
@@ -346,21 +400,69 @@ def extract(segments: Iterable[Segment]) -> Iterator[Observation]:
     if CONFIG.extract_limit:
         batch = batch[: CONFIG.extract_limit]
 
+    attempted = 0
+    failed: list[str] = []
+    produced = 0
+
     with ThreadPoolExecutor(max_workers=CONFIG.extract_concurrency) as pool:
-        for segment, obs in zip(batch, pool.map(_extract_one, batch)):
+        for segment, outcome in zip(batch, pool.map(_extract_one_traced, batch)):
+            obs, error = outcome
+            attempted += 1
+            if error:
+                failed.append(error)
             validated = _validated(segment, obs)
             if validated is not None:
+                produced += 1
                 yield validated
+
+    # A batch where every call failed is a configuration problem, not a run
+    # of unlucky inputs. Skipping each failure individually produced a job
+    # that reported success having extracted nothing, with the real error
+    # left behind in an ephemeral log on an executor. Raising here carries
+    # the message to the driver, where somebody will see it.
+    if attempted and len(failed) == attempted:
+        raise ExtractionUnavailable(
+            f"all {attempted} extraction calls failed; first error: {failed[0]}")
+
+
+def _extract_one_traced(segment: Segment) -> tuple[Observation | None, str | None]:
+    try:
+        return _extract_one(segment), None
+    except ExtractionUnavailable:
+        raise
+    except Exception as exc:
+        return None, f"{type(exc).__name__}: {exc}"[:300]
+
+
+# Failures that will recur on every single call: a missing key, an
+# unfunded account, a revoked permission. Skipping these one at a time
+# turns a configuration error into a run that reports success having
+# extracted nothing -- which is exactly what happened on the cluster.
+_FATAL = ("authentication", "credit balance", "invalid api key", "permission",
+          "unauthorized", "not_found_error", "invalid_request_error")
+
+
+class ExtractionUnavailable(RuntimeError):
+    """The extractor cannot work at all, as opposed to failing on one input."""
 
 
 def _extract_one(segment: Segment) -> Observation | None:
-    """One segment, one call. Failures are logged and skipped rather than
-    failing the partition: losing one observation is recoverable, losing the
-    task's whole batch is not."""
+    """One segment, one call.
+
+    Transient failures are logged and skipped -- losing one observation is
+    recoverable, losing the task's whole batch is not. Configuration
+    failures are raised, because they will affect every remaining call and
+    the alternative is a silent empty run.
+    """
     try:
         return extract_claude(segment)
     except Exception as exc:
+        message = f"{type(exc).__name__}: {exc}"
         from ..security.audit import audit
         audit.write("extraction_failed", segment_id=segment.segment_id,
-                    error=f"{type(exc).__name__}: {exc}"[:300])
-        return None
+                    error=message[:300])
+        if any(marker in message.lower() for marker in _FATAL):
+            raise ExtractionUnavailable(message[:400]) from exc
+        # Re-raised so the caller can tell "this call failed" from "this
+        # segment had nothing to extract" -- both otherwise return None.
+        raise

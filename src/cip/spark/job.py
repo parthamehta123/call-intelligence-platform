@@ -36,7 +36,7 @@ from .aggregate import aggregate_observations
 from .dedupe import dedupe_across_days, dedupe_within_day, record_seen
 from .schemas import CALL, OBSERVATION, SEGMENT
 from .session import get_spark
-from .stages import preprocess_batches, route_and_extract_batches
+from .stages import make_route_and_extract, preprocess_batches
 
 
 def _run_id(day: str) -> str:
@@ -127,13 +127,39 @@ def run(day: str, *, raw_path: str | None = None, config=SPARK, spark=None,
         print(f"[cip] extract_limit={CONFIG.extract_limit} segments "
               f"(a capped run -- published counts will be partial)")
 
-    extracted = to_extract.mapInPandas(route_and_extract_batches, schema=OBSERVATION)
+    # Configuration is captured in the closure, not read from the worker's
+    # environment -- see make_route_and_extract.
+    import os
+
+    extract_fn = make_route_and_extract(
+        extractor=CONFIG.extractor, extract_limit=CONFIG.extract_limit,
+        api_key=os.environ.get("ANTHROPIC_API_KEY"),
+        claude_model=CONFIG.claude_model)
+    extracted = to_extract.mapInPandas(extract_fn, schema=OBSERVATION)
     publish.write_day_partition(
         extracted.withColumn("run_id", F.lit(run_id)).withColumn("day", F.lit(day)),
         table=observations_table, day=day, config=config)
 
     observations = spark.table(observations_table).filter(F.col("day") == day)
     observation_count = observations.count()
+
+    # The backend that actually ran, read back from what the workers wrote.
+    # A driver configured for Claude whose executors quietly used the rules
+    # extractor produces a plausible, complete-looking run -- this is the
+    # only place that discrepancy is visible.
+    backends = [r["extractor"] for r in
+                observations.select("extractor").distinct().collect()]
+    if CONFIG.extractor == "claude" and not observation_count:
+        raise RuntimeError(
+            "extractor=claude produced 0 observations from "
+            f"{to_extract.count()} segments. Every model call failed. Check "
+            "the API key in the secret scope and the account's credit "
+            "balance; refusing to report an empty run as a success.")
+    if CONFIG.extractor == "claude" and any(b.startswith("rules") for b in backends):
+        raise RuntimeError(
+            f"extractor=claude was requested but workers wrote {backends}. "
+            f"Executor configuration did not reach the partition function; "
+            f"refusing to report a run made by a different backend.")
 
     evidence_rows = publish.write_evidence(
         observations, run_id=run_id, day=day, config=config)

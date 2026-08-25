@@ -85,6 +85,12 @@ resources:
             client: "2"
             dependencies:
               - ./dist/*.whl
+              # The wheel keeps `anthropic` optional so the offline demo and
+              # the test suite install nothing. The cluster needs it present
+              # whenever extractor=claude, and its absence surfaced as
+              # ModuleNotFoundError on every executor -- fifteen identical
+              # failures that looked like an API problem.
+              - anthropic>=0.40
 
       tasks:
         - task_key: setup

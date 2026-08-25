@@ -158,3 +158,36 @@ def test_evidence_is_quoted_from_the_utterance_that_matched():
     assert observation is not None
     assert "VPN" in observation.evidence
     assert "invoice" not in observation.evidence
+
+
+def test_configuration_failures_stop_the_run_transient_ones_do_not():
+    """A missing key or an unfunded account fails every call, so skipping
+    them one at a time yields a run that reports success having extracted
+    nothing -- which is what happened on the cluster."""
+    import pytest
+
+    from cip.config import CONFIG
+    from cip.pipeline import extract as extract_module
+
+    segment = _segment(f"customer: {CUSTOMER_CLAIM}")
+    original = extract_module.extract_claude
+    try:
+        def fatal(_seg):
+            raise RuntimeError("Error code: 400 - your credit balance is too low")
+
+        extract_module.extract_claude = fatal
+        with pytest.raises(extract_module.ExtractionUnavailable):
+            extract_module._extract_one(segment)
+
+        def transient(_seg):
+            raise TimeoutError("read timed out")
+
+        extract_module.extract_claude = transient
+        # _extract_one re-raises so the caller can distinguish "this call
+        # failed" from "this segment had nothing to extract" -- both used to
+        # return None, which is how a wholly failed batch looked like a
+        # quiet one. The traced wrapper converts it to (None, error).
+        obs, error = extract_module._extract_one_traced(segment)
+        assert obs is None and "read timed out" in error
+    finally:
+        extract_module.extract_claude = original

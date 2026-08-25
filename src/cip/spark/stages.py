@@ -94,6 +94,38 @@ def preprocess_batches(batches: Iterator[pd.DataFrame]) -> Iterator[pd.DataFrame
         yield _frame(records, SEGMENT_COLUMNS)
 
 
+def make_route_and_extract(*, extractor: str, extract_limit: int = 0,
+                           api_key: str | None = None,
+                           claude_model: str | None = None):
+    """Build the partition function with configuration captured in a closure.
+
+    Executors are separate processes. They re-import `cip.config`, which
+    reads *their* environment, so anything the driver set at runtime --
+    `os.environ["CIP_EXTRACTOR"]`, a mutated CONFIG -- is simply not there.
+    A job configured for Claude therefore ran the rules extractor on every
+    worker and reported success, with the wrong backend recorded in the
+    `extractor` column as the only trace.
+
+    Closures are serialised to the workers, so values captured here do
+    arrive. The driver's preflight proves the secret exists; this is what
+    makes the workers use it.
+    """
+    def run(batches: Iterator[pd.DataFrame]) -> Iterator[pd.DataFrame]:
+        import os
+
+        from ..config import CONFIG
+
+        CONFIG.extractor = extractor
+        CONFIG.extract_limit = extract_limit
+        if claude_model:
+            CONFIG.claude_model = claude_model
+        if api_key:
+            os.environ["ANTHROPIC_API_KEY"] = api_key
+        yield from route_and_extract_batches(batches)
+
+    return run
+
+
 def route_and_extract_batches(batches: Iterator[pd.DataFrame]) -> Iterator[pd.DataFrame]:
     """Funnel + schema-constrained extraction in a single pass.
 
