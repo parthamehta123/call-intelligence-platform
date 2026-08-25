@@ -72,6 +72,28 @@ the executor. A batch where every call fails is a configuration problem
 rather than unlucky inputs, so it now raises with the first error attached,
 and the job refuses to report an empty metered run as a success.
 
+## The full day has not completed
+
+An uncapped run was attempted -- roughly 1,200 model calls -- and stopped
+partway:
+
+```
+ExtractionUnavailable: BadRequestError: 400 invalid_request_error
+  Your credit balance is too low to access the Anthropic API.
+```
+
+The 50-segment run had consumed what was left on the account. Nothing about
+the pipeline failed: the fatal-error classification did exactly what it was
+built for, raising on the first credit error rather than skipping 1,200
+failures one at a time into an empty run that reported success. The failure
+took seconds, not the length of the batch.
+
+The day was then reprocessed with the rules extractor to leave Unity
+Catalog in a consistent state (1,195 observations, 6 published, 2 queued).
+**Every headline figure in this repo is still the rules extractor's.** The
+comparison above stands on 15 segments, which is enough to have found the
+`issue_key` problem and not enough to characterise agreement at scale.
+
 ## Cost
 
 `extract_limit` is applied globally, before the work fans out. It was

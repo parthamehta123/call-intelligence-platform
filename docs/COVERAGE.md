@@ -123,6 +123,7 @@ count.
 5. **The Claude extractor has now run, capped at 50 segments** — see
    `docs/EXTRACTION.md`. It agrees with the rules extractor 15/15 on
    product and type, 14/15 on severity, and required a controlled
-   vocabulary for `issue_key` before it agreed at all. A full uncapped day
-   has not been run, so every headline figure in this repo still comes from
-   the rules extractor.
+   vocabulary for `issue_key` before it agreed at all. An uncapped day was
+   attempted and stopped on an exhausted credit balance, so every headline
+   figure in this repo still comes from the rules extractor and the
+   comparison rests on 15 segments.
