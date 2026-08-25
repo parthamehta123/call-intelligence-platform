@@ -103,12 +103,13 @@ count.
    volume has happened, and ranking behaviour over ten documents says
    little about ranking over a hundred thousand.
 
-2. **The labels are mine.** The router's hard cases, the retrieval queries
-   and their relevance judgements were written by the same person who built
-   the system. A model already found one of them wrong — see
-   `label_revised` in `eval/retrieval_cases.jsonl`. A few hundred queries
-   labelled by somebody else is what would make these numbers defensible
-   rather than indicative.
+2. **The labels are still mine, but no longer have to be.** The harness for
+   somebody else to produce them is built (`docs/LABELLING.md`): stratified
+   sampling toward the decision boundary, the model's score withheld from
+   the annotator, Cohen's kappa over double-labelled items, and contested
+   items excluded from the export rather than settled by vote. What it
+   cannot do is supply a second annotator — until one sits down with it,
+   every figure here still rests on one person's judgement.
 
 3. **Synthetic input throughout.** The calls are generated and the audio is
    text-to-speech, so there is no crosstalk, no accents, no background

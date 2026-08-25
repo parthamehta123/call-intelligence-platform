@@ -136,6 +136,28 @@ def _cmd_eval_groundedness(args) -> int:
     return 0
 
 
+def _cmd_label(args) -> int:
+    from .labeling.cli import label_session
+    return 0 if label_session(args.kind, args.annotator, limit=args.limit) >= 0 else 1
+
+
+def _cmd_label_status(args) -> int:
+    from .labeling.agreement import adjudicate, agreement
+    from .labeling.store import LabelStore
+
+    store = LabelStore()
+    print("=== labels ===")
+    for key, value in store.summary().items():
+        print(f"  {key:20} {value}")
+    print()
+    print(agreement(store).render())
+    contested = adjudicate(store)
+    if contested:
+        print(f"\n  {len(contested)} items need adjudication "
+              f"(excluded from exports until resolved)")
+    return 0
+
+
 def _cmd_audit(args) -> int:
     from .security.audit import audit
     for record in audit.tail(args.limit, event=args.event):
@@ -294,6 +316,16 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("eval-groundedness",
                        help="is every claim in an answer backed by a citation?")
     p.set_defaults(func=_cmd_eval_groundedness)
+
+    p = sub.add_parser("label", help="label items for the eval set")
+    p.add_argument("kind", choices=["router", "retrieval"])
+    p.add_argument("--annotator", required=True,
+                   help="who is labelling; two annotators give an agreement score")
+    p.add_argument("--limit", type=int, default=50)
+    p.set_defaults(func=_cmd_label)
+
+    p = sub.add_parser("label-status", help="coverage and inter-annotator agreement")
+    p.set_defaults(func=_cmd_label_status)
 
     p = sub.add_parser("graph", help="traversal queries over canonical state")
     p.set_defaults(func=_cmd_graph)

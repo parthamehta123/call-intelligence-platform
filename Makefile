@@ -1,6 +1,7 @@
 .PHONY: demo run generate status redteam test ask clean wheel \
 	eval-router eval-retrieval eval-retrieval-real eval-retrieval-judge \
 	eval-identifiers eval-audio eval-rerank eval-groundedness graph \
+	label-router label-retrieval label-status \
 	eval-retrieval-judge-claude eval-attribution \
 	spark-setup spark-test spark-run bundle-validate bundle-deploy bundle-run
 
@@ -47,6 +48,17 @@ HF_ANON := HF_HUB_DISABLE_IMPLICIT_TOKEN=1
 
 eval-groundedness: ## is every claim in an answer backed by a citation?
 	$(PY) -m cip eval-groundedness
+
+label-router:   ## label router items (ANNOTATOR=name)
+	@test -n "$(ANNOTATOR)" || (echo "usage: make label-router ANNOTATOR=your-name" && exit 1)
+	$(PY) -m cip label router --annotator "$(ANNOTATOR)"
+
+label-retrieval: ## label query/document pairs (ANNOTATOR=name)
+	@test -n "$(ANNOTATOR)" || (echo "usage: make label-retrieval ANNOTATOR=your-name" && exit 1)
+	$(PY) -m cip label retrieval --annotator "$(ANNOTATOR)"
+
+label-status:   ## labelling coverage and inter-annotator agreement
+	$(PY) -m cip label-status
 
 graph:          ## traversal queries over canonical product state
 	$(PY) -m cip graph
