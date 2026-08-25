@@ -250,8 +250,20 @@ def _build_request(segment: Segment) -> dict:
         "model": CONFIG.claude_model,
         "max_tokens": 2048,
         "system": SYSTEM_PROMPT,
+        # effort=low, deliberately. Opus 5 runs adaptive thinking by
+        # default, and this task does not need it: the model reads one
+        # short segment and fills a constrained schema whose issue_key is
+        # an enum. Depth of reasoning is not the bottleneck, and across a
+        # day's ~1,200 calls the default was paying for reasoning the task
+        # never uses.
+        #
+        # Lowering effort rather than disabling thinking is the documented
+        # route on Opus 5: with thinking off it can write a tool call into
+        # visible text or leak reasoning tags, and low effort avoids both
+        # while still cutting cost and latency.
         "output_config": {"format": {"type": "json_schema",
-                                     "schema": _schema_for_request()}},
+                                     "schema": _schema_for_request()},
+                          "effort": CONFIG.extract_effort},
         "messages": [{
             "role": "user",
             # The delimiters are a readability aid, not a security control --

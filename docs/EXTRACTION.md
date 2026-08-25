@@ -94,6 +94,24 @@ Catalog in a consistent state (1,195 observations, 6 published, 2 queued).
 comparison above stands on 15 segments, which is enough to have found the
 `issue_key` problem and not enough to characterise agreement at scale.
 
+## Reasoning effort
+
+Extraction now requests `output_config.effort = "low"`
+(`CIP_EXTRACT_EFFORT`). Opus 5 runs adaptive thinking by default, and this
+task cannot use the depth: the model reads one short segment and fills a
+constrained schema whose `issue_key` is an enum. Across a day's ~1,200
+calls the default was paying for reasoning the task never touches.
+
+Lowering effort rather than disabling thinking is the documented route on
+Opus 5 -- with thinking off it can write a tool call into visible text or
+leak reasoning tags, and low effort avoids both while still cutting cost
+and latency.
+
+**Unmeasured.** The retry at 200 segments hit the same exhausted credit
+balance, so the saving is reasoned rather than observed. The request
+payload is verified (`model=claude-opus-5`, `effort=low`,
+`json_schema` with a 9-key enum); what it costs is not.
+
 ## Cost
 
 `extract_limit` is applied globally, before the work fans out. It was

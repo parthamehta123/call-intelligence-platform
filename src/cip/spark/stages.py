@@ -96,7 +96,8 @@ def preprocess_batches(batches: Iterator[pd.DataFrame]) -> Iterator[pd.DataFrame
 
 def make_route_and_extract(*, extractor: str, extract_limit: int = 0,
                            api_key: str | None = None,
-                           claude_model: str | None = None):
+                           claude_model: str | None = None,
+                           extract_effort: str | None = None):
     """Build the partition function with configuration captured in a closure.
 
     Executors are separate processes. They re-import `cip.config`, which
@@ -119,6 +120,8 @@ def make_route_and_extract(*, extractor: str, extract_limit: int = 0,
         CONFIG.extract_limit = extract_limit
         if claude_model:
             CONFIG.claude_model = claude_model
+        if extract_effort:
+            CONFIG.extract_effort = extract_effort
         if api_key:
             os.environ["ANTHROPIC_API_KEY"] = api_key
         yield from route_and_extract_batches(batches)

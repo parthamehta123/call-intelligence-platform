@@ -134,7 +134,8 @@ def run(day: str, *, raw_path: str | None = None, config=SPARK, spark=None,
     extract_fn = make_route_and_extract(
         extractor=CONFIG.extractor, extract_limit=CONFIG.extract_limit,
         api_key=os.environ.get("ANTHROPIC_API_KEY"),
-        claude_model=CONFIG.claude_model)
+        claude_model=CONFIG.claude_model,
+        extract_effort=CONFIG.extract_effort)
     extracted = to_extract.mapInPandas(extract_fn, schema=OBSERVATION)
     publish.write_day_partition(
         extracted.withColumn("run_id", F.lit(run_id)).withColumn("day", F.lit(day)),

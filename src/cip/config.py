@@ -90,6 +90,11 @@ class Config:
     # the opposite of a spend cap.
     extract_limit: int = int(os.environ.get("CIP_EXTRACT_LIMIT", "0"))
     claude_model: str = os.environ.get("CIP_MODEL", "claude-opus-5")
+    # Reasoning effort for extraction: low | medium | high | xhigh | max.
+    # Extraction fills a constrained schema from one short segment, so the
+    # default (high) buys depth the task cannot use and pays for it on
+    # every call.
+    extract_effort: str = os.environ.get("CIP_EXTRACT_EFFORT", "low")
 
     # --- security ---------------------------------------------------------
     egress_allowlist: tuple[str, ...] = (
