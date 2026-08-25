@@ -44,7 +44,7 @@ are mine, and label quality is the ceiling on what these numbers mean.**
 
 | Set | Precision | Recall | Kept | Missed |
 |---|---|---|---|---|
-| Generated (4,000) | 0.977 | **1.0000** | 30.6% | 0 |
+| Generated (4,000) | 0.971 | **1.0000** | 30.6% | 0 |
 | Hard cases (32) | 0.733 | **0.9167** | 46.9% | 1 |
 | Hard cases, excluding the 3 ambiguous | 0.846 | 0.9167 | — | 1 |
 
@@ -68,10 +68,14 @@ Both indexes are built by checking uniqueness across the whole catalog. Ship
 a second router and `router` stops being evidence automatically, rather than
 silently resolving to whichever product happened to be listed first.
 
-Result: recall 0.9499 → **1.0000**, precision 0.976 → 0.977, cost 29.1% →
+Result: recall 0.9499 → **1.0000**, precision 0.976 → 0.971, cost 29.1% →
 30.6% kept. In the pipeline that recovered real signal — observations rose
 1,138 → 1,198, and the X100 reboot issue went from 85 to 107 corroborating
 customers.
+
+The precision figure moved after this was first written, because the
+*label* was corrected rather than the router — see "The label was wrong
+before the router was" below. The recall figure is unchanged.
 
 ### Recall 1.0 means the set is exhausted, not that the router is good
 
@@ -84,6 +88,29 @@ power to discriminate, and a perfect score on it should be read as
 **The hard cases are now the only informative measure**, and they sit at
 0.917 recall / 0.733 precision — or 0.846 precision excluding the three
 ambiguous judgement calls.
+
+### The label was wrong before the router was
+
+Recall later slipped to 0.9860 with 17 apparent misses, and none of them
+were misses. The generated set marked a segment positive if the injected
+sentence appeared anywhere in it, ignoring **who said it** — so the
+generator's own injected diarization errors, which move a claim onto an
+`agent:` line, were labelled as customer speech. The router drops those,
+correctly, and was charged for it. Making the truth function speaker-aware
+restored recall to 1.0000 with 0 misses.
+
+Two things are worth taking from that. The regression arrived when the
+*generator* gained a feature, not when the router changed, so nothing in
+the router's history explained it. And it was only visible because a
+labelling pass disagreed with the eval and the disagreement was
+investigated rather than reconciled — the labels were right and the eval
+was wrong, which is not the direction anyone checks by default.
+
+Of the 35 remaining false alarms, **24 are prompt-injection segments**
+(the router keeps 43 of 57). Dropping those at the router would mean an
+attack never reaches the security stage and is never recorded, so they are
+counted against precision while arguably being correct behaviour.
+Excluding them, precision is 0.9908.
 
 ## Three findings that change what to work on
 
@@ -101,7 +128,7 @@ problem language, without lifting mentions-in-passing.
 from 0.05 to 0.40 produces identical metrics, because the rule-based
 scorer emits a small number of discrete scores. The configured 0.35 was
 never tuned; it just happens to sit in a flat region. On the generated set
-0.45–0.55 is strictly better (precision 1.000 at the same recall), but on
+0.45–0.55 looks better (precision 0.990–0.995 for two misses), but on
 the hard cases 0.45 collapses recall from 0.917 to 0.750. **The circular
 set would have told us to raise the threshold and the realistic set says
 don't** — which is the entire argument for keeping both.

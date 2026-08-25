@@ -62,3 +62,49 @@ It does not make the labels good. It makes them *somebody else's*, records
 who produced each one and how long they took, and refuses to hide the
 disagreements. The numbers only improve when a second person actually sits
 down with it.
+
+## First pass, and what it found
+
+A 50-item router pass exists in the store under annotator
+`claude-opus-5`. **It is a model label set, not a human one**, and it is
+named that way so no reader mistakes it for independent validation: the
+generator, the guidelines, and these labels share an author, so agreement
+between them is consistency, not correctness. The human pass is still
+outstanding, and remains the only thing that can break that circle.
+
+With that caveat, the pass was still worth running, because it disagreed
+with the eval in two places that turned out to be the eval's fault.
+
+**1. The generated set mislabels diarization flips.** `load_generated`
+marks a segment positive iff `signal_text in segment.text`, with no check
+on which speaker said it. 25 of 4000 segments carry the claim on an
+`agent:` line — the generator's own injected diarization errors. The
+router correctly drops them; the eval counts each as a miss.
+
+| truth definition | precision | recall | f1 |
+|---|---|---|---|
+| `signal in text` (was) | 0.9780 | 0.9860 | 0.9820 |
+| speaker-aware (now) | 0.9714 | **1.0000** | 0.9855 |
+
+The reported recall of 0.986 was a floor imposed by the label, not by the
+router. There were no true misses. **Fixed** — `_customer_states` now
+requires the sentence to appear on a `customer:` line, with a regression
+test in `tests/test_router_eval.py`.
+
+**2. The precision figure is mostly injections.** Of the 35 false
+positives under the speaker-aware truth, **24 are prompt-injection
+segments** — the router keeps 43 of 57. That is arguably correct: a
+segment dropped at the router never reaches the security stage and is
+never recorded as an attack. Scored with injections excluded from the
+penalty, precision is 0.9908.
+
+So "precision 0.978 / recall 0.986" resolves into: no real misses, and a
+precision cost that is a deliberate routing decision rather than an error.
+Neither is visible while the label ignores the speaker.
+
+**Fix the label, not the router.** Both effects came from the truth
+function; neither was a router defect. The speaker fix is in. The
+injection question is a policy choice left open on purpose — those 24
+segments are counted against precision while the routing behaviour is
+arguably correct, and the honest thing is to say so rather than to pick
+whichever definition flatters the number.

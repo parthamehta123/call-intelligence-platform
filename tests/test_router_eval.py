@@ -113,3 +113,23 @@ def test_unambiguous_version_identifies_the_product():
     assert (pid, conf) == ("X100", VERSION_CONFIDENCE)
     # A number that is not a catalog version must not resolve anything.
     assert resolve_product("that cost about 7.99 dollars")[0] is None
+
+
+def test_customer_states_requires_a_customer_line():
+    """A claim on an agent line is not the customer having made it.
+
+    The generator injects diarization errors that move a claim onto an
+    `agent:` line. Labelling those positive charges the router with a miss
+    for correctly dropping them, which is what understated recall before.
+    """
+    from cip.eval.dataset import _customer_states
+
+    signal = "The branch gateway loses its static routes on power cycle."
+    customer = f"agent: One moment.\ncustomer: {signal}"
+    flipped = f"customer: One moment.\nagent: {signal}"
+
+    assert _customer_states(customer, signal) is True
+    assert _customer_states(flipped, signal) is False
+    assert _customer_states(customer, None) is False
+    # Said by both: the customer still said it.
+    assert _customer_states(f"{flipped}\ncustomer: {signal}", signal) is True

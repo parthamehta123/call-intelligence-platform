@@ -95,7 +95,7 @@ def _cmd_eval_router(args) -> int:
         print()
     if args.set in ("generated", "both"):
         print(report(load_generated(day=args.day),
-                     "GENERATED - labels exact, but shares an author with the router",
+                     "GENERATED - speaker-aware labels, but shares an author with the router",
                      threshold))
     return 0
 
