@@ -186,7 +186,9 @@ def test_kappa_is_withheld_when_an_annotator_was_advised(tmp_path):
                            annotator="b", note=f"{ADVISED} by a"))
 
     result = agreement(store)
-    assert result.pairs == 6
+    # `pairs` counts INDEPENDENT pairs; all six here were advised, so none
+    # qualify and there is nothing to compute a kappa over.
+    assert result.pairs == 0
     assert result.advised_pairs == 6
     assert not result.independent
     rendered = result.render()
@@ -209,3 +211,59 @@ def test_independent_labels_still_report_kappa(tmp_path):
     result = agreement(store)
     assert result.independent
     assert "Cohen's kappa" in result.render()
+
+
+def test_advised_pairs_are_excluded_rather_than_voiding_the_report(tmp_path):
+    """A stale advised batch must not hide a later independent result.
+
+    `advised_pairs` was a store-wide veto, so one leftover advised pair
+    suppressed the kappa for every other pair. That blocks the exact thing
+    the marker exists to encourage: a second annotator who was not told the
+    answers.
+    """
+    from cip.labeling.agreement import ADVISED, agreement
+    from cip.labeling.store import Label, LabelStore
+
+    store = LabelStore(tmp_path / "labels.jsonl")
+    for k in range(20):
+        store.append(Label(item_id=f"ind{k}", kind="router", value=k % 2,
+                           annotator="colleague"))
+        store.append(Label(item_id=f"ind{k}", kind="router", value=k % 2,
+                           annotator="me"))
+    store.append(Label(item_id="adv", kind="router", value=1,
+                       annotator="partha", note=ADVISED))
+    store.append(Label(item_id="adv", kind="router", value=1, annotator="me"))
+
+    result = agreement(store)
+    assert result.advised_pairs == 1
+    assert result.pairs == 20, "advised pair must not count as independent"
+    assert result.independent
+    rendered = result.render()
+    assert "Cohen's kappa" in rendered
+    assert "EXCLUDED" in rendered
+
+
+def test_repeated_invalid_input_stops_instead_of_looping():
+    """A non-empty invalid answer used to re-prompt without any cap."""
+    from cip.labeling.cli import _ask_until_valid
+
+    calls = {"n": 0}
+
+    def ask(_):
+        calls["n"] += 1
+        if calls["n"] > 50:
+            raise AssertionError("looped without a cap")
+        return "x"
+
+    assert _ask_until_valid(ask, tries=3) is None
+    assert calls["n"] == 3
+
+
+def test_quitting_before_the_first_answer_is_not_an_abort(tmp_path):
+    """An explicit `q` is a choice, not the silent-loss failure."""
+    from cip.labeling.cli import label_session
+
+    store = _store(tmp_path)
+    assert label_session("router", "t", store=store, pool=_pool(),
+                         ask=lambda p: "q") == 0
+    assert not store.path.exists()

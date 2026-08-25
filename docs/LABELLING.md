@@ -97,10 +97,16 @@ someone can transcribe, not whether the guidelines are clear — and 1.000
 "almost perfect" printed next to two annotator names is exactly the kind
 of number that gets quoted without its caveat.
 
-A label may now carry an `advised` note, and `agreement()` **withholds
-kappa entirely** when any pair has one, rather than printing it with a
-warning attached. A number on the page is read and remembered whatever
-sits next to it; the only safe presentation is not to produce it.
+A label may now carry an `advised` note. `agreement()` **excludes those
+pairs from the statistic** and reports the count separately, computing
+kappa over the independent pairs only. It prints no kappa at all when none
+exist — a number on the page is read and remembered whatever sits next to
+it, so the only safe presentation is not to produce one.
+
+The first version of this made `advised` a store-wide veto, which was
+worse than the problem: a single leftover advised pair would have hidden
+the kappa of a hundred genuinely independent ones, blocking exactly the
+second annotator the marker exists to encourage. Caught in review.
 
 ```
   double-labelled items  50

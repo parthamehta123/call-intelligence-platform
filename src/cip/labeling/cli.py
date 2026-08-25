@@ -72,6 +72,7 @@ def label_session(kind: str, annotator: str, limit: int = 50,
     print(f"{len(queue)} items. y = yes, n = no, s = skip, q = stop.\n")
 
     done = 0
+    quit_early = False
     for index, item in enumerate(queue, start=1):
         print("-" * 68)
         print(f"[{index}/{len(queue)}]  {item.prompt()[:600]}")
@@ -81,6 +82,7 @@ def label_session(kind: str, annotator: str, limit: int = 50,
             print("\nstopping; labels so far are saved.")
             break
         if answer == "q":
+            quit_early = True
             break
         if answer == "s":
             continue
@@ -90,6 +92,13 @@ def label_session(kind: str, annotator: str, limit: int = 50,
                            seconds=round(time.time() - started, 2),
                            payload=item.payload))
         done += 1
+
+    if not done and quit_early:
+        # Deliberately stopping before the first answer is a choice, not a
+        # malfunction. Reporting it as an abort would make a normal early
+        # exit indistinguishable from the data loss below.
+        print("\nstopped before labelling anything; nothing to save.")
+        return 0
 
     if not done:
         # The failure this guards against reported success: every item
@@ -113,7 +122,11 @@ def _ask_until_valid(ask, tries: int = 3) -> str | None:
     through to `continue`, so a mistyped key silently discarded that item's
     judgement and the annotator had no way to tell.
     """
-    blanks = 0
+    # The cap covers EVERY unrecognised answer, not only blank ones. Counting
+    # blanks alone left a non-empty invalid token -- a stuck key, a driver
+    # feeding a constant string -- re-prompting forever, which is a hang
+    # rather than the clean abort this function exists to produce.
+    rejected = 0
     while True:
         try:
             answer = ask("  yes/no/skip? [y/n/s/q] ").strip().lower()
@@ -121,12 +134,12 @@ def _ask_until_valid(ask, tries: int = 3) -> str | None:
             return None
         if answer in VALID:
             return answer
+        rejected += 1
+        if rejected >= tries:
+            print("  no usable answer after "
+                  f"{tries} attempts; stopping.")
+            return None
         if not answer:
-            blanks += 1
-            # An input source that returns "" forever is not a person
-            # hitting return; it is a stream with nothing in it.
-            if blanks >= tries:
-                return None
             print("  (no answer read) y = yes, n = no, s = skip, q = stop")
         else:
             print(f"  {answer!r} is not one of y / n / s / q")

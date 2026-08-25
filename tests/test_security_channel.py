@@ -134,3 +134,42 @@ def test_routed_segment_rows_match_the_declared_segment_schema():
 def test_security_event_rows_match_the_declared_schema():
     for frame in scan_for_injections_batches(iter([_batch(EXFIL)])):
         _assert_conforms(frame, SECURITY_EVENT)
+
+
+# --- the invariant, checked across every call site -------------------------
+#
+# `route()` yields segments that must never reach a model. Three call sites
+# consume it; two were updated to filter through `for_extraction` and the
+# third -- eval/attribution_eval.py -- was missed. It stayed silent because
+# the rules extractor returns nothing for an injection payload, so every
+# count was unchanged and every test passed. Under CIP_EXTRACTOR=claude it
+# sent 14 attack payloads to the model.
+#
+# Checked structurally rather than by behaviour: the bug is a call shape, it
+# produces no observable difference under the default extractor, and a new
+# call site added later would reintroduce it in exactly the same way.
+
+def test_no_call_site_feeds_route_output_straight_to_extract():
+    import ast
+    import pathlib
+
+    def inner_call_name(node):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            return node.func.id
+        return None
+
+    offenders = []
+    for path in pathlib.Path("src/cip").rglob("*.py"):
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if inner_call_name(node) != "extract" or not node.args:
+                continue
+            # extract(route(...)) -- the unfiltered shape.
+            if inner_call_name(node.args[0]) == "route":
+                offenders.append(f"{path}:{node.lineno}")
+
+    assert not offenders, (
+        "extract() fed directly from route(); wrap it in for_extraction() so "
+        f"security-only segments never reach a model: {offenders}")

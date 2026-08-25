@@ -35,15 +35,21 @@ class Agreement:
 
     @property
     def independent(self) -> bool:
-        return self.advised_pairs == 0
+        """Whether a meaningful kappa exists at all.
+
+        True when at least one pair was labelled by two annotators who were
+        not told each other's answers. Advised pairs are excluded from the
+        statistic rather than voiding it: a store that has ever held one
+        would otherwise never report a kappa again, hiding the result of
+        exactly the independent annotator it is trying to encourage.
+        """
+        return self.pairs > 0
 
     @property
     def interpretation(self) -> str:
         # Landis & Koch bands, named rather than left as a bare number.
-        if not self.independent:
-            return "NOT INDEPENDENT -- see below"
         if self.pairs == 0:
-            return "no double-labelled items yet"
+            return "no independently double-labelled items yet"
         for threshold, label in ((0.81, "almost perfect"), (0.61, "substantial"),
                                  (0.41, "moderate"), (0.21, "fair")):
             if self.kappa >= threshold:
@@ -51,21 +57,22 @@ class Agreement:
         return "poor -- rewrite the guidelines before labelling more"
 
     def render(self) -> str:
-        lines = [
-            "=== inter-annotator agreement ===",
-            f"  double-labelled items  {self.pairs}",
-        ]
-        if not self.independent:
-            # Deliberately not printing kappa. A number on the page is read
-            # and remembered whatever the caveat next to it says.
+        lines = ["=== inter-annotator agreement ==="]
+        if self.advised_pairs:
             lines += [
-                f"  advised items          {self.advised_pairs}",
-                "",
-                "  kappa NOT REPORTED. On these items one annotator was told",
-                "  the answer, so agreement measures transcription, not whether",
-                "  the guidelines are clear. A second INDEPENDENT annotator is",
-                "  the only thing that produces a meaningful number here.",
+                f"  advised items          {self.advised_pairs}  (EXCLUDED)",
+                "    one annotator was told the answer, so agreement on these",
+                "    measures transcription rather than whether the guidelines",
+                "    are clear. No kappa is computed over them.",
             ]
+        lines.append(f"  independent pairs      {self.pairs}")
+        if not self.pairs:
+            # No number at all, rather than a number with a caveat beside
+            # it: a figure on the page is quoted whatever sits next to it.
+            lines.append(
+                "\n  kappa NOT REPORTED -- no item has been labelled by two "
+                "independent\n  annotators. That is the only thing that "
+                "produces a meaningful number here.")
             return "\n".join(lines)
         lines += [
             f"  observed agreement     {self.observed:.3f}",
@@ -88,7 +95,11 @@ def agreement(store: LabelStore | None = None) -> Agreement:
         if len(by_annotator) < 2:
             continue
         if any(ADVISED in (label.note or "") for label in labels):
+            # Counted, then skipped. It contributes to neither the kappa nor
+            # the conflict list, so an old advised batch cannot distort or
+            # suppress a later independent annotator's result.
             result.advised_pairs += 1
+            continue
         annotators = sorted(by_annotator)[:2]
         a, b = by_annotator[annotators[0]], by_annotator[annotators[1]]
         first_votes.append(a)

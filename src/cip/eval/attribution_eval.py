@@ -21,7 +21,7 @@ from ..config import CONFIG
 from ..pipeline.extract import extract
 from ..pipeline.ingest import list_partitions, read_partition
 from ..pipeline.preprocess import preprocess
-from ..pipeline.route import route
+from ..pipeline.route import for_extraction, route
 
 
 @dataclass
@@ -93,7 +93,7 @@ def evaluate_attribution(day: str = "2026-08-22") -> AttributionReport:
     for partition in list_partitions(day):
         segments = list(preprocess(read_partition(partition)))
         by_id = {segment.segment_id: segment for segment in segments}
-        for observation in extract(route(segments)):
+        for observation in extract(for_extraction(route(segments))):
             report.observations += 1
             if observation.attribution_confidence < CONFIG.attribution_floor:
                 report.weakly_attributed += 1

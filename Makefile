@@ -145,7 +145,7 @@ wheel:
 # unset variable, which sends people to ask an admin for rights they do
 # not need.
 prod-guard:
-	@if [ "$(TARGET)" = "prod" ] && [ "$(SP)" = "" ]; then \
+	@if [ "$(TARGET)" = "prod" ] && { [ "$(SP)" = "" ] || [ "$(SP)" = "$(SENTINEL)" ]; }; then \
 	  echo "prod deploys need the service principal's application ID:"; \
 	  echo "  make prod-preflight SP=<application-id>   # check it exists first"; \
 	  echo "  make bundle-deploy TARGET=prod SP=<application-id>"; \
