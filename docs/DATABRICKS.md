@@ -143,16 +143,37 @@ CREATE TABLE IF NOT EXISTS <catalog>.<schema>._probe (x INT);
 DROP TABLE <catalog>.<schema>._probe;
 ```
 
-The production service principal should hold exactly:
+The production service principal holds exactly this — the list below is
+what a real prod run actually needed, not what it looked like it would
+need. An earlier version of this table named four tables; the job writes
+nine, and it fails on the first one it cannot reach.
 
 | Object | Grant | Why |
 |---|---|---|
-| `cip.call_intelligence.issues` | `MODIFY` | the only table the writer updates |
-| `cip.call_intelligence.evidence` | `MODIFY` | append-only provenance |
-| `cip.call_intelligence.review_queue` | `MODIFY` | human queue |
-| `cip.call_intelligence.policy_audit` | `MODIFY` | decision log |
+| catalog `cip` | `USE CATALOG` | reach anything at all |
+| schema `cip.call_intelligence` | `USE SCHEMA` | same |
+| `issues` | `SELECT, MODIFY` | the knowledge base |
+| `evidence` | `SELECT, MODIFY` | append-only provenance |
+| `review_queue` | `SELECT, MODIFY` | human queue |
+| `policy_audit` | `SELECT, MODIFY` | decision log |
+| `segments` | `SELECT, MODIFY` | silver, and replay without re-reading raw |
+| `observations` | `SELECT, MODIFY` | materialised extraction output |
+| `security_events` | `SELECT, MODIFY` | the injection channel |
+| `seen_segments` | `SELECT, MODIFY` | global dedupe |
+| `run_metrics` | `SELECT, MODIFY` | run history |
 | the raw volume | `READ VOLUME` | never write |
 | everything else | — | nothing |
+
+`SELECT` alongside `MODIFY` is not redundant: the job reads back what it
+wrote (`spark.table(...)`) to verify the extractor backend, count rows and
+sum tokens. A writer that cannot read cannot check its own work.
+
+Note what is **absent**: no `CREATE TABLE`, no `CREATE SCHEMA`, no
+`CREATE CATALOG`. The tables are created by an admin before the first run,
+out of band. The `setup` task's DDL is all `IF NOT EXISTS`, so it succeeds
+as a no-op — but on a genuinely empty catalog it would fail, and that is
+the correct trade: a nightly writer that can create tables can also create
+one nobody is watching.
 
 This is where the RBAC layer physically lives. The policy engine sits on
 top of it; it does not replace it.
@@ -226,40 +247,79 @@ make bundle-validate-prod    # Validation OK!
 That passes. Everything in the prod target except the deployment root is
 confirmed sound.
 
-#### State of the prod target
+#### Bringing prod up from nothing
 
-A service principal now exists in the development workspace —
-`cip-prod-writer` — and `validate -t prod` resolves against its real home
-directory:
+Done once, as an admin, in this order. Each step is here because it
+actually blocked a deploy or a run.
 
-```
-Path: /Workspace/Users/<application-id>/.bundle/call-intelligence-platform/prod
-Validation OK!
-```
-
-`make prod-preflight SP=<application-id>` finds it. So the identity, the
-deployment root and every job definition in the target are confirmed.
-
-**Still unverified: a prod deploy and run**, and the blocker is no longer
-the service principal. `prod` targets catalog `cip`, which does not exist
-in this workspace — the same wall the dev target hit, and why dev uses
-`full_workspace`. Creating it needs an explicit `MANAGED LOCATION`, since
-`CREATE CATALOG` is rejected on Default Storage:
+**1 · The catalog.** `CREATE CATALOG cip` is rejected on Default Storage,
+so it needs an explicit managed location inside an existing external
+location:
 
 ```sql
-CREATE CATALOG cip MANAGED LOCATION 's3://<bucket>/unity-catalog/cip';
+CREATE CATALOG cip MANAGED LOCATION 's3://<bucket>/unity-catalog/<workspace-id>/cip';
+CREATE SCHEMA cip.call_intelligence;
+CREATE VOLUME cip.call_intelligence.raw_calls;
 ```
 
-The service principal then needs grants on exactly the objects listed
-above, and nothing else — `USE CATALOG` and `USE SCHEMA`, plus table
-privileges. It currently holds only the default `workspace-access` and
-`databricks-sql-access` entitlements, which is the right starting point:
-it can do nothing to the knowledge base until told otherwise.
+**2 · The tables**, created by an admin rather than the job — see the
+grant table above for why the service principal has no `CREATE TABLE`.
+Render them from `cip.spark.ddl.DDL`.
 
-Pointing `prod` at `full_workspace` instead would deploy today, but it
-collapses the dev/prod isolation that the `run_as` and `root_path` design
-exists to enforce, so it is a deliberate decision rather than a shortcut
-to take quietly.
+**3 · The service principal**, and the grants in the table above:
+
+```bash
+databricks service-principals create --display-name cip-prod-writer
+```
+
+**4 · The `servicePrincipal.user` role**, which is the step that is easy
+to miss. Creating a service principal makes you its *manager*, and a
+manager cannot bind it to a job:
+
+```
+Cannot bind the service principal provided in 'run_as' field to the job.
+The user creating or updating the job must have 'servicePrincipal.user'
+role on the service principal. (403 PERMISSION_DENIED)
+```
+
+Manager does not imply user. Add the role to the account rule set for that
+principal (`PUT /api/2.0/preview/accounts/access-control/rule-sets`,
+`roles/servicePrincipal.user`), keeping the existing manager rule.
+
+**5 · Deploy and run:**
+
+```bash
+make prod-preflight SP=<application-id>
+make bundle-deploy TARGET=prod SP=<application-id>
+make bundle-run    TARGET=prod SP=<application-id>
+```
+
+#### Verified
+
+`prod` has now been deployed and run end to end, `run_as` the service
+principal, on the least-privilege grants above:
+
+```json
+{"day": "2026-08-24", "calls": 4000, "segments_landed": 3996,
+ "injections_detected": 57, "injections_inspection_only": 14,
+ "observations": 1195, "candidates": 8, "published": 6,
+ "queued_for_review": 2}
+security_checks: 10/10 blocked
+```
+
+Identical to dev on every figure. Read back from the `cip` tables rather
+than taken from the run summary: `evidence` 1195, `observations` 1195,
+`issues` 6, `review_queue` 2, and `security_events` 57 — 43 `both`, 14
+`injection`.
+
+Two things to know about that run. `prod` takes `day: ""`, meaning
+yesterday in UTC, computed on the cluster — unlike `dev`, which pins the
+seeded day. A first prod run therefore looks for a date that has to exist
+in the volume, and the failure is a bare `PATH_NOT_FOUND`. And the calls
+used here are the synthetic day copied under that date, so the
+`timestamp` inside each call disagrees with the partition it sits in; the
+pipeline keys off the `day` parameter throughout, so this affects nothing
+but is worth knowing before reading those rows.
 
 `databricks.yml` builds the wheel from this repo and attaches it to every
 task, which is what makes `import cip` work inside the Python workers.
