@@ -81,6 +81,44 @@ runs that report success having done nothing, and the labelling tool —
 added to make the eval trustworthy — had the same bug. The tool that
 checks the work needs checking too.
 
+## The agreement number that measured nothing
+
+A second annotator labelled the same 50 items and the tool reported:
+
+```
+annotators             ['claude-opus-5', 'partha']
+observed agreement     1.000
+Cohen's kappa          1.000 (almost perfect)
+```
+
+Arithmetically correct, and completely meaningless: the second annotator
+had been told every answer. Kappa over a dictated pair measures whether
+someone can transcribe, not whether the guidelines are clear — and 1.000
+"almost perfect" printed next to two annotator names is exactly the kind
+of number that gets quoted without its caveat.
+
+A label may now carry an `advised` note, and `agreement()` **withholds
+kappa entirely** when any pair has one, rather than printing it with a
+warning attached. A number on the page is read and remembered whatever
+sits next to it; the only safe presentation is not to produce it.
+
+```
+  double-labelled items  50
+  advised items          50
+
+  kappa NOT REPORTED. On these items one annotator was told
+  the answer, so agreement measures transcription, not whether
+  the guidelines are clear.
+```
+
+The labels themselves are kept, marked. They are still a usable eval slice
+— they agree 50/50 with the generator's ground truth — they are simply not
+evidence of *inter-annotator* agreement, and the store now says so.
+
+**The open item is unchanged and honest: no independent second annotator
+has labelled this set.** That is a person who is not me and who has not
+been told the answers, and nothing in this repo can substitute for it.
+
 ## What it does not do
 
 It does not make the labels good. It makes them *somebody else's*, records

@@ -164,3 +164,48 @@ def test_interactive_session_refuses_a_non_tty(monkeypatch, tmp_path):
     monkeypatch.setattr(sys.stdin, "isatty", lambda: False, raising=False)
     with pytest.raises(LabellingAborted, match="tty"):
         label_session("router", "t", store=_store(tmp_path), pool=_pool())
+
+
+# --- agreement must not be reportable when it was not independent ----------
+#
+# A real session produced kappa 1.000 across two annotators, which reads as
+# independent validation. One annotator had been told every answer. The
+# number was arithmetically correct and completely meaningless, and that is
+# the worst kind of number to leave in a repo.
+
+def test_kappa_is_withheld_when_an_annotator_was_advised(tmp_path):
+    from cip.labeling.agreement import ADVISED, agreement
+    from cip.labeling.store import Label, LabelStore
+
+    store = LabelStore(tmp_path / "labels.jsonl")
+    for k in range(6):
+        value = k % 2
+        store.append(Label(item_id=f"i{k}", kind="router", value=value,
+                           annotator="a"))
+        store.append(Label(item_id=f"i{k}", kind="router", value=value,
+                           annotator="b", note=f"{ADVISED} by a"))
+
+    result = agreement(store)
+    assert result.pairs == 6
+    assert result.advised_pairs == 6
+    assert not result.independent
+    rendered = result.render()
+    assert "NOT REPORTED" in rendered
+    # The point is that no number survives to be quoted out of context.
+    assert "1.000" not in rendered
+    assert "almost perfect" not in rendered
+
+
+def test_independent_labels_still_report_kappa(tmp_path):
+    from cip.labeling.agreement import agreement
+    from cip.labeling.store import Label, LabelStore
+
+    store = LabelStore(tmp_path / "labels.jsonl")
+    for k in range(6):
+        value = k % 2
+        store.append(Label(item_id=f"i{k}", kind="router", value=value, annotator="a"))
+        store.append(Label(item_id=f"i{k}", kind="router", value=value, annotator="b"))
+
+    result = agreement(store)
+    assert result.independent
+    assert "Cohen's kappa" in result.render()

@@ -18,16 +18,30 @@ from dataclasses import dataclass, field
 from .store import Label, LabelStore
 
 
+# A label carrying this marker was not produced independently -- the
+# annotator was told the answer. Kappa over such a pair measures whether
+# one party can transcribe, not whether the guidelines are clear, so the
+# reporting path refuses to interpret it.
+ADVISED = "advised"
+
+
 @dataclass
 class Agreement:
     pairs: int = 0
     observed: float = 0.0
     kappa: float = 0.0
     conflicts: list[str] = field(default_factory=list)
+    advised_pairs: int = 0
+
+    @property
+    def independent(self) -> bool:
+        return self.advised_pairs == 0
 
     @property
     def interpretation(self) -> str:
         # Landis & Koch bands, named rather than left as a bare number.
+        if not self.independent:
+            return "NOT INDEPENDENT -- see below"
         if self.pairs == 0:
             return "no double-labelled items yet"
         for threshold, label in ((0.81, "almost perfect"), (0.61, "substantial"),
@@ -37,12 +51,29 @@ class Agreement:
         return "poor -- rewrite the guidelines before labelling more"
 
     def render(self) -> str:
-        return "\n".join([
+        lines = [
             "=== inter-annotator agreement ===",
             f"  double-labelled items  {self.pairs}",
+        ]
+        if not self.independent:
+            # Deliberately not printing kappa. A number on the page is read
+            # and remembered whatever the caveat next to it says.
+            lines += [
+                f"  advised items          {self.advised_pairs}",
+                "",
+                "  kappa NOT REPORTED. On these items one annotator was told",
+                "  the answer, so agreement measures transcription, not whether",
+                "  the guidelines are clear. A second INDEPENDENT annotator is",
+                "  the only thing that produces a meaningful number here.",
+            ]
+            return "\n".join(lines)
+        lines += [
             f"  observed agreement     {self.observed:.3f}",
             f"  Cohen's kappa          {self.kappa:.3f} ({self.interpretation})",
-        ] + ([f"  conflicts: {', '.join(self.conflicts[:6])}"] if self.conflicts else []))
+        ]
+        if self.conflicts:
+            lines.append(f"  conflicts: {', '.join(self.conflicts[:6])}")
+        return "\n".join(lines)
 
 
 def agreement(store: LabelStore | None = None) -> Agreement:
@@ -56,6 +87,8 @@ def agreement(store: LabelStore | None = None) -> Agreement:
             by_annotator.setdefault(label.annotator, label.value)
         if len(by_annotator) < 2:
             continue
+        if any(ADVISED in (label.note or "") for label in labels):
+            result.advised_pairs += 1
         annotators = sorted(by_annotator)[:2]
         a, b = by_annotator[annotators[0]], by_annotator[annotators[1]]
         first_votes.append(a)
