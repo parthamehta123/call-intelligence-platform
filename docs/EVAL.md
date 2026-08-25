@@ -78,6 +78,27 @@ Result: recall 0.9499 → **1.0000**, precision 0.976 → 0.991, cost 29.1% →
 1,138 → 1,198, and the X100 reboot issue went from 85 to 107 corroborating
 customers.
 
+**Those figures are historical.** They were measured when this section was
+written; the day now yields **1,195 observations**, and the X100 reboot
+issue **109** corroborating customers. Nothing regressed — the generator
+gained diarization errors afterwards, and they are supposed to cost
+observations.
+
+Suppressing only the speaker flip, while holding the generator's RNG
+stream identical so the rest of the day is byte-for-byte the same, gives
+**1,215 observations against 1,195** — the flips cost 20. That is the
+mechanism working: a claim relabelled onto an `agent:` line is not a
+customer report, and extraction reads customer turns only.
+
+The remaining gap between 1,215 and the historical 1,198 is not
+reconstructible from this tree, and it would be dishonest to attribute it
+to one cause. Both the generator and the extractor changed in the same
+commit (`1624119`), which also made extraction read issue and product from
+the *same* utterance rather than from the concatenated segment. The
+1,138 → 1,198 delta remains a true statement about the entity-resolution
+fix at the time it was made; it is not a current figure, and is left
+labelled rather than quietly overwritten.
+
 The precision figure moved twice after this was first written, both times
 because the *label* was corrected rather than the router — see "The label
 was wrong before the router was" and "Injections are a third class" below.
