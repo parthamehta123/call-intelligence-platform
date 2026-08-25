@@ -92,11 +92,12 @@ requires the sentence to appear on a `customer:` line, with a regression
 test in `tests/test_router_eval.py`.
 
 **2. The precision figure is mostly injections.** Of the 35 false
-positives under the speaker-aware truth, **24 are prompt-injection
-segments** — the router keeps 43 of 57. That is arguably correct: a
-segment dropped at the router never reaches the security stage and is
-never recorded as an attack. Scored with injections excluded from the
-penalty, precision is 0.9908.
+positives under the speaker-aware truth, **24 were prompt-injection
+segments** — and the router was forwarding only 43 of 57. That is
+arguably correct behaviour being penalised: a segment dropped at the
+router never reaches the security stage and is never recorded as an
+attack. Scored with injections excluded from the penalty, precision is
+0.9908.
 
 So "precision 0.978 / recall 0.986" resolves into: no real misses, and a
 precision cost that is a deliberate routing decision rather than an error.
@@ -109,5 +110,12 @@ negatives (`docs/EVAL.md`, "Injections are a third class").
 
 Making that change also turned the second finding into a security metric
 rather than a precision footnote — and the metric immediately showed the
-router dropping **14 of 57** injections before the security stage ever
-sees them. The number that looked like a scoring quibble was a gap.
+router dropping **14 of 57** injections before the security stage ever saw
+them. The number that looked like a scoring quibble was a gap.
+
+It is now closed: the injection detector was given its own path to the
+router's keep decision, and both channels read 57/57 and 2/2 with the
+funnel's cost unchanged (`docs/SECURITY.md`). Worth stating plainly, since
+it is the argument for doing any of this — **a labelling pass found a
+security hole**. Not by looking for one; by disagreeing with an eval about
+five segments and following the disagreement instead of settling it.

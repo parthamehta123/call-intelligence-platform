@@ -70,6 +70,28 @@ DDL = {
             relevance DOUBLE,
             pii_redactions INT,
             content_hash STRING,
+            route_reason STRING,
+            injection_signatures STRING,
+            run_id STRING,
+            day STRING
+        ) USING {fmt}
+        PARTITIONED BY (day)
+    """,
+    # The security channel. Separate from `segments` because it answers a
+    # different question -- not "what did we process" but "what tried to
+    # attack us" -- and because it must stay readable by people who are not
+    # granted the transcript text that `segments` carries.
+    "security_events": """
+        CREATE TABLE IF NOT EXISTS {t} (
+            segment_id STRING,
+            call_id STRING,
+            customer_id STRING,
+            timestamp STRING,
+            region STRING,
+            route_reason STRING,
+            injection_signatures STRING,
+            relevance DOUBLE,
+            reached_extraction BOOLEAN,
             run_id STRING,
             day STRING
         ) USING {fmt}

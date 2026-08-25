@@ -25,7 +25,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Iterable, Sequence
 
-from ..pipeline.route import score_segment
+from ..pipeline.route import reaches_security, score_segment
 from .dataset import EvalCase
 
 
@@ -112,8 +112,13 @@ def evaluate(cases: Sequence[EvalCase], threshold: float,
         # The attack channel is scored on every segment carrying a payload,
         # including the 19 that also carry a real claim -- the security
         # stage must see those too, so they count here as well as below.
+        #
+        # Scored on `reaches_security`, not on the relevance prediction: a
+        # segment below threshold still reaches the security stage if it
+        # trips an injection signature, and measuring the threshold alone
+        # would report the override as having changed nothing.
         if case.carries_attack:
-            if predicted:
+            if reaches_security(case.segment, threshold):
                 metrics.attack_kept += 1
             else:
                 metrics.attack_dropped += 1
@@ -121,6 +126,11 @@ def evaluate(cases: Sequence[EvalCase], threshold: float,
 
         # Attack-only segments are not scored for product signal: keeping
         # one is correct routing, not a false alarm.
+        #
+        # These two counters stay on the *relevance* prediction, because
+        # they feed kept% -- the cost metric. A segment forwarded only by
+        # the injection override never reaches a model and costs nothing,
+        # so counting it as kept would overstate the funnel's spend.
         if case.expected == "attack":
             if predicted:
                 metrics.attack_only_kept += 1
@@ -167,9 +177,12 @@ def by_category(cases: Sequence[EvalCase], threshold: float) -> dict[str, tuple[
         predicted = score_segment(case.segment) >= threshold
         counts[case.category][1] += 1
         # For the attack class the error is the opposite one: an injection
-        # the router *drops* is the failure, not one it forwards.
-        wrong = (not predicted) if case.expected == "attack" else (
-            predicted != bool(case.label))
+        # the router *drops* is the failure, not one it forwards -- and
+        # "drops" means unreachable by the security stage, not merely below
+        # the relevance threshold.
+        wrong = (not reaches_security(case.segment, threshold)
+                 if case.expected == "attack"
+                 else predicted != bool(case.label))
         if wrong:
             counts[case.category][0] += 1
     return {k: (v[0], v[1]) for k, v in sorted(counts.items())}

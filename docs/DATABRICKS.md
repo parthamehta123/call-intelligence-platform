@@ -18,6 +18,22 @@ Here is the honest per-stage account, now that the port exists and runs.
 | 2 · preprocess (redact, segment) | `mapInPandas(preprocess_batches)` — same function body | **yes** |
 | 3 · route (funnel) | fused into the extract pass | **yes** |
 | 4 · extract | `mapInPandas(route_and_extract_batches)` — same `cip.pipeline.extract` | **yes** |
+| security channel | `mapInPandas(scan_for_injections_batches)` → `security_events` | **yes** |
+
+The security channel is a second pass rather than an extra output of the
+extract stage, because `mapInPandas` yields exactly one schema. Locally an
+injection the router forwards for inspection is recorded in the audit log;
+an executor has no such log, so without this stage the cluster would drop
+those segments silently — the identical failure the router override exists
+to fix, one layer down. Re-running the router is pure CPU, which is why
+paying for it twice is cheaper than threading a second output through
+extraction.
+
+It also runs over the **uncapped** segments, before `extract_limit` is
+applied. That cap is a spend limit on model calls; letting it bound the
+injection scan too would mean a cheap capped run inspected less of the day
+than a full one.
+
 | dedupe | **rewritten** — was an in-process `set`, now a shuffle | no |
 | 5 · aggregate | **rewritten** — was a `defaultdict` over the whole day, now `groupBy/agg` | no |
 | 6 · reconcile | unchanged, runs on the driver over ~12 rows | yes |

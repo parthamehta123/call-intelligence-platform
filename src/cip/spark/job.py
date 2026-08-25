@@ -34,9 +34,10 @@ from ..security.audit import audit
 from . import audit_sink, ddl, publish
 from .aggregate import aggregate_observations
 from .dedupe import dedupe_across_days, dedupe_within_day, record_seen
-from .schemas import CALL, OBSERVATION, SEGMENT
+from .schemas import CALL, OBSERVATION, SECURITY_EVENT, SEGMENT
 from .session import get_spark
-from .stages import make_route_and_extract, preprocess_batches
+from .stages import (make_route_and_extract, preprocess_batches,
+                     scan_for_injections_batches)
 
 
 def _run_id(day: str) -> str:
@@ -115,6 +116,25 @@ def run(day: str, *, raw_path: str | None = None, config=SPARK, spark=None,
             f"for an earlier day, or a preprocessing failure. Refusing to "
             f"report success on an empty run.")
 
+    # --- security channel --------------------------------------------------
+    # Runs before extraction and over the *uncapped* segments, deliberately.
+    # `extract_limit` is a spend cap on model calls; letting it also bound
+    # the injection scan would mean a cheap capped run silently inspected
+    # less of the day than a full one, which is the wrong thing to make
+    # cheaper. This stage calls no model.
+    security_table = _table("security_events", config=config)
+    scanned = silver.select(*[f.name for f in SEGMENT.fields]).mapInPandas(
+        scan_for_injections_batches, schema=SECURITY_EVENT)
+    publish.write_day_partition(
+        scanned.withColumn("run_id", F.lit(run_id)).withColumn("day", F.lit(day)),
+        table=security_table, day=day, config=config)
+    security_events = spark.table(security_table).filter(F.col("day") == day)
+    injection_count = security_events.count()
+    inspection_only = security_events.filter(
+        ~F.col("reached_extraction")).count()
+    print(f"[cip] injections detected {injection_count} "
+          f"({inspection_only} forwarded for inspection only)")
+
     # --- extraction --------------------------------------------------------
     observations_table = _table("observations", config=config)
     to_extract = silver.select(*[f.name for f in SEGMENT.fields])
@@ -192,6 +212,8 @@ def run(day: str, *, raw_path: str | None = None, config=SPARK, spark=None,
         # second time over the full day, and a metric is not worth that.
         "segments_landed": segment_count,
         "pii_redactions": int(pii),
+        "injections_detected": injection_count,
+        "injections_inspection_only": inspection_only,
         "observations": observation_count,
         "evidence_rows": evidence_rows,
         "candidates": len(candidates),

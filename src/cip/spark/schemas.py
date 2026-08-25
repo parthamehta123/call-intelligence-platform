@@ -10,8 +10,8 @@ explicitly typed.
 from __future__ import annotations
 
 from pyspark.sql.types import (
-    ArrayType, DoubleType, IntegerType, LongType, MapType, StringType,
-    StructField, StructType, TimestampType,
+    ArrayType, BooleanType, DoubleType, IntegerType, LongType, MapType,
+    StringType, StructField, StructType, TimestampType,
 )
 
 TURN = StructType([
@@ -51,6 +51,26 @@ SEGMENT = StructType([
     StructField("relevance", DoubleType(), False),
     StructField("pii_redactions", IntegerType(), False),
     StructField("content_hash", StringType(), False),
+    # Additive: partitions written before the injection override have
+    # neither column, and read back as null rather than failing.
+    StructField("route_reason", StringType(), True),
+    StructField("injection_signatures", StringType(), True),
+])
+
+# The security channel. Written by a stage of its own because the fused
+# route+extract stage can only yield one schema, and an injection that
+# never becomes an Observation would otherwise leave no cluster-side trace
+# at all -- the same silent drop the router override exists to fix.
+SECURITY_EVENT = StructType([
+    StructField("segment_id", StringType(), False),
+    StructField("call_id", StringType(), False),
+    StructField("customer_id", StringType(), False),
+    StructField("timestamp", StringType(), False),
+    StructField("region", StringType(), False),
+    StructField("route_reason", StringType(), False),
+    StructField("injection_signatures", StringType(), False),
+    StructField("relevance", DoubleType(), False),
+    StructField("reached_extraction", BooleanType(), False),
 ])
 
 OBSERVATION = StructType([

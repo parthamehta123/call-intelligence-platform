@@ -75,6 +75,11 @@ class Segment:
     product_confidence: float = 0.0
     relevance: float = 0.0
     pii_redactions: int = 0
+    # Why the router let this through. "relevance" means it looked like
+    # product signal and goes to extraction; "injection" means it did not,
+    # and is forwarded for security inspection ONLY -- see `route`.
+    route_reason: str = ""
+    injection_signatures: list[str] = field(default_factory=list)
 
 
 @dataclass

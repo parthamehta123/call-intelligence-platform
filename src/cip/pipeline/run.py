@@ -31,7 +31,7 @@ from .extract import extract
 from .ingest import list_partitions, manifest, read_partition
 from .preprocess import preprocess
 from .reconcile import reconcile
-from .route import route
+from .route import for_extraction, route
 
 
 def process_partition(path: Path) -> tuple[list[Observation], dict]:
@@ -44,9 +44,27 @@ def process_partition(path: Path) -> tuple[list[Observation], dict]:
         segments.append(segment)
 
     routed = list(route(segments))
-    stats["segments_to_llm"] = len(routed)
+    to_model = list(for_extraction(routed))
+    security_only = [s for s in routed if s.route_reason == "injection"]
 
-    observations = list(extract(routed))
+    # Counted apart from `segments_to_llm` on purpose: a segment forwarded
+    # for inspection costs nothing at a model, so folding it into the cost
+    # metric would misreport the funnel. It is the security metric.
+    stats["segments_to_llm"] = len(to_model)
+    stats["injections_detected"] = sum(1 for s in routed if s.injection_signatures)
+    stats["injections_inspection_only"] = len(security_only)
+
+    for segment in security_only:
+        # Recorded here because nothing downstream will see it: the
+        # extractor never runs on these, so this is the only place the
+        # attempt becomes evidence.
+        audit.write("injection_forwarded_for_inspection",
+                    segment_id=segment.segment_id, call_id=segment.call_id,
+                    customer_id=segment.customer_id,
+                    signatures=segment.injection_signatures,
+                    relevance=round(segment.relevance, 3))
+
+    observations = list(extract(to_model))
     stats["observations"] = len(observations)
     return observations, dict(stats)
 

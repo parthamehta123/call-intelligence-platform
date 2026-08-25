@@ -31,12 +31,13 @@ import pandas as pd
 
 from ..pipeline.extract import extract
 from ..pipeline.preprocess import segment_call
-from ..pipeline.route import route
+from ..pipeline.route import for_extraction, route
 from ..schemas import CallRecord, Segment
-from .schemas import OBSERVATION, SEGMENT
+from .schemas import OBSERVATION, SECURITY_EVENT, SEGMENT
 
 SEGMENT_COLUMNS = [f.name for f in SEGMENT.fields]
 OBSERVATION_COLUMNS = [f.name for f in OBSERVATION.fields]
+SECURITY_EVENT_COLUMNS = [f.name for f in SECURITY_EVENT.fields]
 
 
 def _content_hash(text: str) -> str:
@@ -129,6 +130,31 @@ def make_route_and_extract(*, extractor: str, extract_limit: int = 0,
     return run
 
 
+def _segments_from(batch: pd.DataFrame) -> list[Segment]:
+    """Rebuild `Segment`s from a silver batch.
+
+    Shared by all three stages that route: three copies of this constructor
+    is three places for a new field to be forgotten, and a field missing
+    here is silently defaulted rather than raised.
+    """
+    return [
+        Segment(
+            segment_id=row["segment_id"], call_id=row["call_id"],
+            customer_id=row["customer_id"], timestamp=row["timestamp"],
+            region=row["region"], text=row["text"],
+            speaker_mix=dict(_null(row["speaker_mix"]) or {}),
+            customer_turns=int(_num(row.get("customer_turns"), 0)),
+            # Missing means the partition predates diarization capture, so
+            # it is trusted -- consistent with preprocessing treating an
+            # absent per-turn speaker_confidence as 1.0.
+            attribution_confidence=_num(row.get("attribution_confidence"), 1.0),
+            product_hint=_null(row.get("product_hint")), trust=row["trust"],
+            pii_redactions=int(row["pii_redactions"]),
+        )
+        for row in batch.to_dict("records")
+    ]
+
+
 def route_and_extract_batches(batches: Iterator[pd.DataFrame]) -> Iterator[pd.DataFrame]:
     """Funnel + schema-constrained extraction in a single pass.
 
@@ -137,23 +163,11 @@ def route_and_extract_batches(batches: Iterator[pd.DataFrame]) -> Iterator[pd.Da
     the data, and this is exactly where it stops costing money.
     """
     for batch in batches:
-        segments = [
-            Segment(
-                segment_id=row["segment_id"], call_id=row["call_id"],
-                customer_id=row["customer_id"], timestamp=row["timestamp"],
-                region=row["region"], text=row["text"],
-                speaker_mix=dict(_null(row["speaker_mix"]) or {}),
-                customer_turns=int(_num(row.get("customer_turns"), 0)),
-                # Missing means the partition predates diarization capture, so
-                # it is trusted -- consistent with preprocessing treating an
-                # absent per-turn speaker_confidence as 1.0.
-                attribution_confidence=_num(row.get("attribution_confidence"), 1.0),
-                product_hint=_null(row.get("product_hint")), trust=row["trust"],
-                pii_redactions=int(row["pii_redactions"]),
-            )
-            for row in batch.to_dict("records")
-        ]
-        records = [asdict(o) for o in extract(route(segments))]
+        segments = _segments_from(batch)
+        # `for_extraction` drops the security-only segments the router
+        # forwards for inspection. Without it the executor would pay a
+        # model to read every injection payload in the partition.
+        records = [asdict(o) for o in extract(for_extraction(route(segments)))]
         yield _frame(records, OBSERVATION_COLUMNS)
 
 
@@ -161,22 +175,46 @@ def score_relevance_batches(batches: Iterator[pd.DataFrame]) -> Iterator[pd.Data
     """Router only -- used when you want funnel metrics without paying for
     extraction, e.g. tuning the threshold against a labelled sample."""
     for batch in batches:
-        records = [asdict(s) for s in route([
-            Segment(
-                segment_id=row["segment_id"], call_id=row["call_id"],
-                customer_id=row["customer_id"], timestamp=row["timestamp"],
-                region=row["region"], text=row["text"],
-                speaker_mix=dict(_null(row["speaker_mix"]) or {}),
-                customer_turns=int(_num(row.get("customer_turns"), 0)),
-                # Missing means the partition predates diarization capture, so
-                # it is trusted -- consistent with preprocessing treating an
-                # absent per-turn speaker_confidence as 1.0.
-                attribution_confidence=_num(row.get("attribution_confidence"), 1.0),
-                product_hint=_null(row.get("product_hint")), trust=row["trust"],
-                pii_redactions=int(row["pii_redactions"]),
-            )
-            for row in batch.to_dict("records")
-        ])]
+        records = [asdict(s) for s in route(_segments_from(batch))]
         for record in records:
             record["content_hash"] = _content_hash(record["text"])
+            # Spark has no list column here; the signatures are a flat
+            # string so the routing reason survives into the lake, where
+            # the security channel can be queried without re-running scans.
+            record["injection_signatures"] = ",".join(
+                record.get("injection_signatures") or [])
         yield _frame(records, SEGMENT_COLUMNS)
+
+
+def scan_for_injections_batches(batches: Iterator[pd.DataFrame]) -> Iterator[pd.DataFrame]:
+    """The security channel, as its own pass over the segments.
+
+    `route_and_extract_batches` drops security-only segments so no model is
+    paid to read an attacker's text -- but `mapInPandas` yields exactly one
+    schema, so an injection that never becomes an `Observation` would leave
+    no cluster-side trace whatsoever. Locally the audit log catches those;
+    on Spark there is no driver-side log to write to from an executor.
+
+    So the scan runs again here and emits rows. It is pure CPU -- no model
+    call, no network -- which is what makes running the router twice
+    cheaper than threading a second output through the extraction stage.
+
+    Emits every segment carrying a signature, including those that also
+    carry a real claim: `reached_extraction` records which, so a reader can
+    tell an inspected-and-extracted segment from an inspected-only one.
+    """
+    for batch in batches:
+        rows = []
+        for segment in route(_segments_from(batch)):
+            if not segment.injection_signatures:
+                continue
+            rows.append({
+                "segment_id": segment.segment_id, "call_id": segment.call_id,
+                "customer_id": segment.customer_id,
+                "timestamp": segment.timestamp, "region": segment.region,
+                "route_reason": segment.route_reason,
+                "injection_signatures": ",".join(segment.injection_signatures),
+                "relevance": float(segment.relevance),
+                "reached_extraction": segment.route_reason != "injection",
+            })
+        yield _frame(rows, SECURITY_EVENT_COLUMNS)
