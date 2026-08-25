@@ -72,6 +72,46 @@ the executor. A batch where every call fails is a configuration problem
 rather than unlucky inputs, so it now raises with the first error attached,
 and the job refuses to report an empty metered run as a success.
 
+## 200 segments, effort=low
+
+```
+observations 61 · candidates 9 · published 2 · queued 7
+avg confidence 0.784 · extractor claude-opus-5
+```
+
+**The controlled vocabulary held completely.** All 61 observations used
+canonical keys; no free-form keys and no `NEW__` proposals. The enum is
+doing the work the prose instruction alone could not.
+
+Claude also reproduced the polarity split unprompted — `VPN_DISCONNECT`
+came back as 7 `bug_report` and 4 `praise`, correctly separating callers
+reporting the defect from callers saying 7.2 fixed it. That distinction is
+what sends the issue to human review rather than publishing a contradiction,
+and it was not asked for in the schema.
+
+### Switching extractor changed a published severity
+
+Two rows were rewritten by this run:
+
+```
+X100 / SPONTANEOUS_REBOOT   critical (rules)  ->  high (claude-opus-5)
+X100 / VPN_DISCONNECT       high              ->  high
+```
+
+The reboot severity was the single disagreement in the 15-segment
+comparison, and here it reached the knowledge base. Neither reading is
+obviously wrong — a device rebooting nightly unattended is arguably either
+— but it is a reminder that severity is a *judgement* the extractor makes,
+not a fact it copies, and that changing extractors rewrites judgements
+already published. A production cutover wants both extractors run in
+parallel and their disagreements reviewed, not a switch.
+
+Because the run was capped, the `issues` table briefly mixed
+rules-derived rows with Claude-derived ones. MERGE semantics mean state
+persists across runs, which is correct for a knowledge base and confusing
+for a comparison; the day was reprocessed with the rules extractor
+afterwards to leave it coherent.
+
 ## The full day has not completed
 
 An uncapped run was attempted -- roughly 1,200 model calls -- and stopped
@@ -107,10 +147,11 @@ Opus 5 -- with thinking off it can write a tool call into visible text or
 leak reasoning tags, and low effort avoids both while still cutting cost
 and latency.
 
-**Unmeasured.** The retry at 200 segments hit the same exhausted credit
-balance, so the saving is reasoned rather than observed. The request
-payload is verified (`model=claude-opus-5`, `effort=low`,
-`json_schema` with a 9-key enum); what it costs is not.
+The 200-segment run above used `effort=low` throughout and produced
+sensible extractions at average confidence 0.784, so the setting is not
+degrading quality at this size. The *saving* remains unquantified: this
+repo never captured per-call token usage, so the comparison against the
+default effort is reasoned rather than measured.
 
 ## Cost
 
