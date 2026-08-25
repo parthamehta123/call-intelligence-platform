@@ -162,6 +162,13 @@ def run(day: str, *, raw_path: str | None = None, config=SPARK, spark=None,
             f"Executor configuration did not reach the partition function; "
             f"refusing to report a run made by a different backend.")
 
+    # Summed from the rows the workers wrote, which is the only place a
+    # per-call figure from an executor survives.
+    token_totals = observations.agg(
+        F.coalesce(F.sum("input_tokens"), F.lit(0)),
+        F.coalesce(F.sum("output_tokens"), F.lit(0)),
+        F.sum(F.when(F.col("input_tokens") > 0, 1).otherwise(0))).collect()[0]
+
     evidence_rows = publish.write_evidence(
         observations, run_id=run_id, day=day, config=config)
 
@@ -190,6 +197,17 @@ def run(day: str, *, raw_path: str | None = None, config=SPARK, spark=None,
         "candidates": len(candidates),
         **outcome,
     }
+
+    from ..pricing import estimate
+
+    spend = estimate(CONFIG.claude_model, int(token_totals[2] or 0),
+                     int(token_totals[0] or 0), int(token_totals[1] or 0))
+    if spend.calls:
+        stats.update(model_calls=spend.calls,
+                     input_tokens=spend.input_tokens,
+                     output_tokens=spend.output_tokens,
+                     estimated_usd=round(spend.usd, 4) if spend.usd is not None else None)
+        print(spend.render())
     _write_metrics(spark, stats=stats, config=config)
     audit.write("spark_run_finished", **stats)
     stats["audit_rows"] = audit_sink.flush(

@@ -113,6 +113,13 @@ def run_day(day: str, workers: int = 1) -> dict:
     reindexed = refresh_index()
 
     day_manifest = manifest(day)
+    from ..pricing import estimate
+
+    metered = [o for o in observations if o.input_tokens]
+    spend = estimate(CONFIG.claude_model, len(metered),
+                     sum(o.input_tokens for o in metered),
+                     sum(o.output_tokens for o in metered))
+
     stats = {
         "run_id": run_id,
         "day": day,
@@ -129,6 +136,10 @@ def run_day(day: str, workers: int = 1) -> dict:
         "rejected": refused,
         "documents_reindexed": reindexed,
     }
+    if spend.calls:
+        stats.update(model_calls=spend.calls, input_tokens=spend.input_tokens,
+                     output_tokens=spend.output_tokens,
+                     estimated_usd=round(spend.usd, 4) if spend.usd is not None else None)
     kb.finish_run(run_id, stats)
     audit.write("run_finished", **stats)
     return stats

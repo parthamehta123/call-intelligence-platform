@@ -99,6 +99,8 @@ DDL = {
             extractor STRING,
             speaker STRING,
             attribution_confidence DOUBLE,
+            input_tokens INT,
+            output_tokens INT,
             run_id STRING,
             day STRING
         ) USING {fmt}

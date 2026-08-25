@@ -210,7 +210,33 @@ degrading quality at this size. The *saving* remains unquantified: this
 repo never captured per-call token usage, so the comparison against the
 default effort is reasoned rather than measured.
 
-## Cost
+## Cost, reported by the run
+
+Three paid runs happened before this existed and none could say what they
+cost. Usage is now carried on the observation row -- a counter on an
+executor never reaches the driver, and the row is already travelling to a
+table that survives -- so a run reports its own spend:
+
+```
+model            claude-opus-5
+model calls      1191
+input tokens     619,320
+output tokens    166,740
+estimated cost   $7.27
+per 1k calls     $6.10
+```
+
+`input_tokens` / `output_tokens` are columns on `observations`, so cost is
+also a SQL query over any slice: per product, per issue, per day.
+
+Two deliberate choices. Cached reads are traced separately rather than
+folded into `input_tokens`, since they bill at a fraction of the rate and
+folding them overstates spend. And an unknown model reports **unknown**
+instead of guessing — rates go stale, and a confident wrong number is worse
+than an absent one. The model id is printed beside every estimate so the
+figure can be checked against an invoice rather than trusted.
+
+## Earlier cost notes
 
 `extract_limit` is applied globally, before the work fans out. It was
 originally applied inside the partition function, where 50 would have meant

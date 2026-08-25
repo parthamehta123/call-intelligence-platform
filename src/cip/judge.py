@@ -186,10 +186,13 @@ def _judge_claude(query: str, document: str, model: str) -> bool:
     payload = json.loads(raw)
     verdict = bool(payload["answers_the_question"])
 
+    usage = getattr(response, "usage", None)
     from .security.audit import trace_model_call
     trace_model_call(component="judge", model=model,
                      prompt=CLAUDE_PROMPT.format(query=query, document=document),
-                     response=raw, verdict=verdict)
+                     response=raw, verdict=verdict,
+                     input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
+                     output_tokens=int(getattr(usage, "output_tokens", 0) or 0))
     if not verdict:
         REJECTIONS.append({"query": query, "document": document[:70],
                            "reason": payload.get("reason", "")})

@@ -106,6 +106,12 @@ class Observation:
     # very issues agents talk about most.
     speaker: str = "customer"
     attribution_confidence: float = 1.0
+    # Tokens this observation's model call consumed. Zero for the rules
+    # extractor, which makes no call. Carried on the row because executors
+    # write to ephemeral local logs -- a counter there never reaches the
+    # driver, and the row is already travelling to a table that survives.
+    input_tokens: int = 0
+    output_tokens: int = 0
 
     def validate(self) -> list[str]:
         """Schema validation. Anything that fails here never reaches the KB."""

@@ -289,12 +289,26 @@ def extract_claude(segment: Segment, client=None) -> Observation | None:
         return None
     raw = next(b.text for b in response.content if b.type == "text")
 
+    usage = getattr(response, "usage", None)
+    tokens = {
+        "input_tokens": int(getattr(usage, "input_tokens", 0) or 0),
+        "output_tokens": int(getattr(usage, "output_tokens", 0) or 0),
+        # Cached reads are billed at a fraction of the input rate, so a cost
+        # figure that folds them into input_tokens overstates spend.
+        "cache_read_input_tokens": int(
+            getattr(usage, "cache_read_input_tokens", 0) or 0),
+    }
+
     from ..security.audit import trace_model_call
     trace_model_call(component="extractor", model=CONFIG.claude_model,
                      prompt=segment.text, response=raw,
-                     segment_id=segment.segment_id)
+                     segment_id=segment.segment_id, **tokens)
 
-    return _from_payload(segment, json.loads(raw), extractor=CONFIG.claude_model)
+    observation = _from_payload(segment, json.loads(raw), extractor=CONFIG.claude_model)
+    if observation is not None:
+        observation.input_tokens = tokens["input_tokens"]
+        observation.output_tokens = tokens["output_tokens"]
+    return observation
 
 
 def extract_claude_batch(segments: list[Segment], client=None) -> list[Observation]:

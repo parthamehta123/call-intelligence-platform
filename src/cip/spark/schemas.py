@@ -72,6 +72,8 @@ OBSERVATION = StructType([
     StructField("extractor", StringType(), False),
     StructField("speaker", StringType(), True),
     StructField("attribution_confidence", DoubleType(), True),
+    StructField("input_tokens", IntegerType(), True),
+    StructField("output_tokens", IntegerType(), True),
 ])
 
 # Stage metrics emitted per partition, unioned and summed on the driver.
