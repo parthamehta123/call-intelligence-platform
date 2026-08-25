@@ -226,16 +226,40 @@ make bundle-validate-prod    # Validation OK!
 That passes. Everything in the prod target except the deployment root is
 confirmed sound.
 
-**Still unverified:** an actual prod deploy and run. That needs a service
-principal, and creating an identity in someone's workspace is not
-something this repo should do on an operator's behalf:
+#### State of the prod target
 
-```bash
-databricks service-principals create --display-name cip-prod-writer
+A service principal now exists in the development workspace —
+`cip-prod-writer` — and `validate -t prod` resolves against its real home
+directory:
+
+```
+Path: /Workspace/Users/<application-id>/.bundle/call-intelligence-platform/prod
+Validation OK!
 ```
 
-Then grant it exactly the objects listed above, and run the three commands
-at the top of this section.
+`make prod-preflight SP=<application-id>` finds it. So the identity, the
+deployment root and every job definition in the target are confirmed.
+
+**Still unverified: a prod deploy and run**, and the blocker is no longer
+the service principal. `prod` targets catalog `cip`, which does not exist
+in this workspace — the same wall the dev target hit, and why dev uses
+`full_workspace`. Creating it needs an explicit `MANAGED LOCATION`, since
+`CREATE CATALOG` is rejected on Default Storage:
+
+```sql
+CREATE CATALOG cip MANAGED LOCATION 's3://<bucket>/unity-catalog/cip';
+```
+
+The service principal then needs grants on exactly the objects listed
+above, and nothing else — `USE CATALOG` and `USE SCHEMA`, plus table
+privileges. It currently holds only the default `workspace-access` and
+`databricks-sql-access` entitlements, which is the right starting point:
+it can do nothing to the knowledge base until told otherwise.
+
+Pointing `prod` at `full_workspace` instead would deploy today, but it
+collapses the dev/prod isolation that the `run_as` and `root_path` design
+exists to enforce, so it is a deliberate decision rather than a shortcut
+to take quietly.
 
 `databricks.yml` builds the wheel from this repo and attaches it to every
 task, which is what makes `import cip` work inside the Python workers.
