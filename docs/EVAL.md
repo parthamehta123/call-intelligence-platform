@@ -252,6 +252,25 @@ It is now written to `model_calls` once and read back, so every figure
 comes from one set of calls. `.cache()` is rejected on serverless, which is
 the same reason silver is materialised rather than cached.
 
+**Confirmed against the provider's own usage figures.** For the day in
+question, filtered to the model this pipeline calls:
+
+    console reported          6,179,879 in    750,568 out
+    this pipeline reported    4,051,185 in    492,440 out
+    excess                    2,128,694       258,128     (+53%)
+
+Every run made before the fix was evaluated twice. Predicting that gives
+6,065,487 in / 736,048 out — a residual of 1.9% on *both* quantities,
+which is the credit-exhausted runs retrying three times each before
+failing. Two independent quantities agreeing to the same fraction is what
+makes this a measurement rather than a story.
+
+The lesson is not "materialise before writing twice". It is that a lazy
+DataFrame over a **billed, non-deterministic** UDF is a different object
+from a lazy DataFrame over a pure one, and Spark gives no indication which
+you are holding. The cost report cannot catch this on its own: it sums
+what one evaluation produced, and it is right about that evaluation.
+
 Verified on a full metered day (`Re43789d18a`, **$13.26**):
 
     model_calls   1223 = 1188 produced + 35 abstained
