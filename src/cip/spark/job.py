@@ -211,22 +211,26 @@ def run(day: str, *, raw_path: str | None = None, config=SPARK, spark=None,
             f"Executor configuration did not reach the partition function; "
             f"refusing to report a run made by a different backend.")
 
-    # Summed from the rows the workers wrote, which is the only place a
-    # per-call figure from an executor survives.
     # Summed over model_calls, not observations: one row per metered call,
     # so a call that returned no signal still contributes its tokens.
-    model_calls_df = spark.table(calls_table).filter(F.col("day") == day)
-    # A *metered* call carries tokens, or produced nothing at all. The
-    # rules extractor makes no calls, so its rows match neither and the
-    # spend block below is skipped rather than reporting 1195 free calls.
-    metered = (F.coalesce(F.col("input_tokens"), F.lit(0)) > 0) | \
-              (~F.coalesce(F.col("produced_observation"), F.lit(True)))
-    call_totals = model_calls_df.agg(
+    # Read from `extracted`, which is already this table materialised.
+    #
+    # Three outcomes, and they are not interchangeable. An ABSTENTION was
+    # billed and returned no signal. A FAILURE never got a response, so its
+    # tokens are unknown -- but the request still left the machine, and
+    # omitting it made the extractor's count disagree with the router's by
+    # 2 of 1225 on the first full day. The rules extractor produces neither,
+    # so the spend block below is skipped rather than reporting 1195 free
+    # calls.
+    failed = F.coalesce(F.col("call_failed"), F.lit(False))
+    abstained = ~F.coalesce(F.col("produced_observation"), F.lit(True)) & ~failed
+    metered = (F.coalesce(F.col("input_tokens"), F.lit(0)) > 0) | abstained
+    call_totals = extracted.agg(
         F.coalesce(F.sum("input_tokens"), F.lit(0)),
         F.coalesce(F.sum("output_tokens"), F.lit(0)),
-        F.sum(F.when(metered, 1).otherwise(0)),
-        F.sum(F.when(~F.coalesce(F.col("produced_observation"), F.lit(True)),
-                     1).otherwise(0))).collect()[0]
+        F.sum(F.when(metered | failed, 1).otherwise(0)),
+        F.sum(F.when(abstained, 1).otherwise(0)),
+        F.sum(F.when(failed, 1).otherwise(0))).collect()[0]
 
     evidence_rows = publish.write_evidence(
         observations, run_id=run_id, day=day, config=config)
@@ -270,6 +274,7 @@ def run(day: str, *, raw_path: str | None = None, config=SPARK, spark=None,
         # Claude day by 34 of 1225 calls.
         stats.update(model_calls=spend.calls,
                      calls_without_observation=int(call_totals[3] or 0),
+                     calls_failed=int(call_totals[4] or 0),
                      input_tokens=spend.input_tokens,
                      output_tokens=spend.output_tokens,
                      estimated_usd=round(spend.usd, 4) if spend.usd is not None else None)

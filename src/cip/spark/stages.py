@@ -201,7 +201,8 @@ def route_and_extract_batches(batches: Iterator[pd.DataFrame]) -> Iterator[pd.Da
         # forwards for inspection. Without it the executor would pay a
         # model to read every injection payload in the partition.
         observations = list(extract(for_extraction(route(segments))))
-        records = [dict(asdict(o), produced_observation=True) for o in observations]
+        records = [dict(asdict(o), produced_observation=True, call_failed=False)
+                   for o in observations]
 
         # Every metered call that returned nothing. With the rules
         # extractor the ledger is empty and this adds no rows at all.
@@ -229,6 +230,7 @@ def route_and_extract_batches(batches: Iterator[pd.DataFrame]) -> Iterator[pd.Da
                 "output_tokens": call.output_tokens,
                 "cache_read_input_tokens": call.cache_read_input_tokens,
                 "produced_observation": False,
+                "call_failed": call.failed,
             })
         yield _frame(records, EXTRACTION)
 

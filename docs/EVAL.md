@@ -252,14 +252,39 @@ It is now written to `model_calls` once and read back, so every figure
 comes from one set of calls. `.cache()` is rejected on serverless, which is
 the same reason silver is materialised rather than cached.
 
-Verified on a metered run (`R633dfba2fc`, 291 calls, $3.15):
+Verified on a full metered day (`Re43789d18a`, **$13.26**):
 
-    model_calls   291 = 280 produced + 11 abstained
-    observations  280
-    contradictions  0
+    model_calls   1223 = 1188 produced + 35 abstained
+    observations  1188
+    contradictions   0
 
-The 11 abstaining calls carry real usage — 1374, 1366, 1315 input tokens —
-and none of it was counted before this change.
+The 35 abstaining calls carry real usage — 1374, 1366, 1315 input tokens
+among them — and none of it was counted before this change.
+
+### Three outcomes, not two
+
+That same run exposed the last gap. `route_decisions` said **1225**
+segments were routed to the model; the extractor recorded **1223**. Two
+calls had raised, and `extract_claude` writes the ledger only after a
+successful response, so a failure left no trace at all.
+
+An attempt is now recorded before the exception is re-raised, with
+`call_failed` separating it from an abstention. The two are not
+interchangeable:
+
+| outcome | billed | tokens | meaning |
+|---|---|---|---|
+| produced | yes | known | an observation |
+| abstained | yes | known | the model saw nothing to report |
+| failed | maybe | unknown | no response arrived |
+
+Collapsing failures into abstentions would have made the abstention rate —
+a quality signal — quietly wrong, and collapsing them into nothing made
+the call count disagree with the router's.
+
+The gap was 2 of 1225, about 2¢. It was only visible because the router's
+count and the extractor's are produced by two independent passes and
+compared.
 
 ## Known weaknesses this surfaces
 

@@ -119,6 +119,8 @@ EXTRACTION = StructType(
         # False for a call that produced nothing. The count of these is the
         # abstention rate, which used to be invisible.
         StructField("produced_observation", BooleanType(), True),
+        # Attempted and errored: tokens unknown, NOT an abstention.
+        StructField("call_failed", BooleanType(), True),
     ])
 
 

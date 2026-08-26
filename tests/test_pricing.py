@@ -8,6 +8,8 @@ reaches the driver.
 
 from __future__ import annotations
 
+import pytest
+
 from cip.pricing import RATES, estimate
 from cip.schemas import Observation
 
@@ -137,4 +139,35 @@ def test_totals_of_no_calls_is_zero_not_missing():
 
     assert totals([]) == {"model_calls": 0, "input_tokens": 0,
                           "output_tokens": 0, "cache_read_input_tokens": 0,
-                          "calls_without_observation": 0}
+                          "calls_without_observation": 0, "calls_failed": 0}
+
+
+def test_a_call_that_errored_is_recorded_as_an_attempt(monkeypatch):
+    """A failed call left no trace at all, so the counts disagreed.
+
+    `extract_claude` writes the ledger only after a successful response, so
+    a request that raised was invisible: the router said 1225 segments went
+    to the model and the extractor recorded 1223.
+    """
+    from cip.pipeline import extract as ex
+
+    ex.LEDGER.drain()
+
+    def boom(_segment, client=None):
+        raise RuntimeError("connection reset by peer")
+
+    monkeypatch.setattr(ex, "extract_claude", boom)
+    with pytest.raises(RuntimeError):
+        ex._extract_one(_segment("customer: The X100 reboots.", "S9"))
+
+    calls = ex.LEDGER.drain()
+    assert len(calls) == 1
+    assert calls[0].failed is True
+    assert calls[0].produced_observation is False
+
+    t = ex.totals(calls)
+    assert t["model_calls"] == 1, "an attempt is a call"
+    assert t["calls_failed"] == 1
+    # A failure is not an abstention: one was billed and returned nothing,
+    # the other never got a response at all.
+    assert t["calls_without_observation"] == 0

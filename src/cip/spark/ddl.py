@@ -105,6 +105,7 @@ DDL = {
             output_tokens INT,
             cache_read_input_tokens INT,
             produced_observation BOOLEAN,
+            call_failed BOOLEAN,
             run_id STRING,
             day STRING
         ) USING {fmt}

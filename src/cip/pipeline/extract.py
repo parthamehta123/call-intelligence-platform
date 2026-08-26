@@ -174,6 +174,10 @@ class ModelCall:
     output_tokens: int
     cache_read_input_tokens: int = 0
     produced_observation: bool = False
+    # The call raised rather than returning. Its tokens are unknown -- the
+    # response never arrived -- so it must not be read as an abstention,
+    # which is a call that WAS billed and returned no signal.
+    failed: bool = False
 
 
 class UsageLedger:
@@ -216,7 +220,13 @@ def totals(calls: list[ModelCall]) -> dict:
         # dropped: a rising number here means the extractor is abstaining,
         # which is a quality signal that used to be invisible.
         "calls_without_observation": sum(1 for c in calls
-                                         if not c.produced_observation),
+                                         if not c.produced_observation
+                                         and not c.failed),
+        # Attempted and errored. Recorded because the router's count and
+        # the extractor's must agree: a failed call left no row at all, so
+        # 2 of 1225 went missing on the first full day and the spend figure
+        # could not be reconciled against segments routed.
+        "calls_failed": sum(1 for c in calls if c.failed),
     }
 
 
@@ -577,6 +587,12 @@ def _extract_one(segment: Segment) -> Observation | None:
         return extract_claude(segment)
     except Exception as exc:
         message = f"{type(exc).__name__}: {exc}"
+        # Recorded before anything else. `extract_claude` writes the ledger
+        # only after a successful response, so a call that raised left no
+        # trace and the day's call count came up short against the router's.
+        LEDGER.record(ModelCall(segment_id=segment.segment_id,
+                                input_tokens=0, output_tokens=0,
+                                produced_observation=False, failed=True))
         from ..security.audit import audit
         audit.write("extraction_failed", segment_id=segment.segment_id,
                     error=message[:300])
