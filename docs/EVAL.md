@@ -218,18 +218,26 @@ and a call that returns no signal produces none. 1,225 calls were billed;
 1,191 were counted. A 3% undercount here, and a mechanism that reports $0
 for a run that abstains on everything while the bill arrives in full.
 
-Two fixes, because the local and Spark paths have different constraints:
+A `UsageLedger` records every call as it is made, whether or not an
+observation results. Locally `run.py` drains it directly.
 
-* **Locally**, a `UsageLedger` records every call as it is made, whether or
-  not an observation results, and `run.py` drains it. Exact.
-* **On Spark**, the executor cannot reach the driver, so the call count
-  comes from `route_decisions` filtered to `reached_extraction` — the exact
-  number of segments handed to the extractor. Tokens still ride on rows, so
-  measured spend is reported as a **lower bound** with `calls_without_usage`
-  named alongside it, plus a projection at the measured mean.
+On Spark that was not enough: `mapInPandas` yields exactly one schema, so a
+call with no observation had no row to travel on. The extraction stage now
+emits the wider **`EXTRACTION`** schema — every observation column,
+nullable, plus the call's usage — and the driver projects two tables out of
+it: `observations` from the rows where `observation_id` is present, and
+`model_calls` from all of them. Spend is summed over `model_calls`.
 
-The honest summary: `model_calls` is now exact everywhere, and token totals
-are exact locally and a labelled lower bound on Spark.
+Token totals are therefore **exact on both paths**, and
+`calls_without_observation` is now a reported figure rather than an
+invisible one — a rising value there means the extractor is abstaining,
+which is a quality signal that previously left no trace.
+
+The driver also cross-checks the two independent passes: `route_decisions`
+knows how many segments were routed to the model and `model_calls` knows
+how many calls were made. A mismatch means one of them is wrong and the
+spend figure cannot be trusted, so it is printed as a warning rather than
+reconciled silently.
 
 ## Known weaknesses this surfaces
 

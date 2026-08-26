@@ -34,7 +34,7 @@ from ..security.audit import audit
 from . import audit_sink, ddl, publish
 from .aggregate import aggregate_observations
 from .dedupe import dedupe_across_days, dedupe_within_day, record_seen
-from .schemas import CALL, OBSERVATION, ROUTE_DECISION, SEGMENT
+from .schemas import CALL, EXTRACTION, OBSERVATION, ROUTE_DECISION, SEGMENT
 from .session import get_spark
 from .stages import (make_route_and_extract, preprocess_batches,
                      route_decisions_batches)
@@ -43,6 +43,10 @@ from .stages import (make_route_and_extract, preprocess_batches,
 def _run_id(day: str) -> str:
     stamp = datetime.now(timezone.utc).isoformat()
     return "R" + hashlib.sha1(f"{day}:{stamp}".encode()).hexdigest()[:10]
+
+
+OBSERVATION_COLUMNS_WITH_PARTITION = (
+    [f.name for f in OBSERVATION.fields] + ["run_id", "day"])
 
 
 def _table(name: str, *, config=SPARK) -> str:
@@ -160,9 +164,23 @@ def run(day: str, *, raw_path: str | None = None, config=SPARK, spark=None,
         api_key=os.environ.get("ANTHROPIC_API_KEY"),
         claude_model=CONFIG.claude_model,
         extract_effort=CONFIG.extract_effort)
-    extracted = to_extract.mapInPandas(extract_fn, schema=OBSERVATION)
+    # The stage emits one row per metered CALL, not per observation: a call
+    # that returns no signal produces no Observation and would otherwise
+    # carry its tokens nowhere. Both tables are projections of it.
+    extracted = (to_extract.mapInPandas(extract_fn, schema=EXTRACTION)
+                 .withColumn("run_id", F.lit(run_id))
+                 .withColumn("day", F.lit(day)))
+
+    calls_table = _table("model_calls", config=config)
     publish.write_day_partition(
-        extracted.withColumn("run_id", F.lit(run_id)).withColumn("day", F.lit(day)),
+        extracted.select("segment_id", "extractor", "input_tokens",
+                         "output_tokens", "cache_read_input_tokens",
+                         "produced_observation", "run_id", "day"),
+        table=calls_table, day=day, config=config)
+
+    publish.write_day_partition(
+        extracted.filter(F.col("observation_id").isNotNull())
+                 .select(*OBSERVATION_COLUMNS_WITH_PARTITION),
         table=observations_table, day=day, config=config)
 
     observations = spark.table(observations_table).filter(F.col("day") == day)
@@ -188,15 +206,20 @@ def run(day: str, *, raw_path: str | None = None, config=SPARK, spark=None,
 
     # Summed from the rows the workers wrote, which is the only place a
     # per-call figure from an executor survives.
-    # Tokens are only ever carried on observation rows, so a call that
-    # returned no signal contributes none. `rows_with_usage` is therefore
-    # the count of *attributed* calls, not the count of calls made --
-    # `segments_to_model` above is that. The difference is reported rather
-    # than hidden, and the spend below is explicitly a lower bound.
-    token_totals = observations.agg(
+    # Summed over model_calls, not observations: one row per metered call,
+    # so a call that returned no signal still contributes its tokens.
+    model_calls_df = spark.table(calls_table).filter(F.col("day") == day)
+    # A *metered* call carries tokens, or produced nothing at all. The
+    # rules extractor makes no calls, so its rows match neither and the
+    # spend block below is skipped rather than reporting 1195 free calls.
+    metered = (F.coalesce(F.col("input_tokens"), F.lit(0)) > 0) | \
+              (~F.coalesce(F.col("produced_observation"), F.lit(True)))
+    call_totals = model_calls_df.agg(
         F.coalesce(F.sum("input_tokens"), F.lit(0)),
         F.coalesce(F.sum("output_tokens"), F.lit(0)),
-        F.sum(F.when(F.col("input_tokens") > 0, 1).otherwise(0))).collect()[0]
+        F.sum(F.when(metered, 1).otherwise(0)),
+        F.sum(F.when(~F.coalesce(F.col("produced_observation"), F.lit(True)),
+                     1).otherwise(0))).collect()[0]
 
     evidence_rows = publish.write_evidence(
         observations, run_id=run_id, day=day, config=config)
@@ -231,28 +254,25 @@ def run(day: str, *, raw_path: str | None = None, config=SPARK, spark=None,
 
     from ..pricing import estimate
 
-    rows_with_usage = int(token_totals[2] or 0)
-    spend = estimate(CONFIG.claude_model, rows_with_usage,
-                     int(token_totals[0] or 0), int(token_totals[1] or 0))
+    spend = estimate(CONFIG.claude_model, int(call_totals[2] or 0),
+                     int(call_totals[0] or 0), int(call_totals[1] or 0))
     if spend.calls:
-        # `model_calls` is what was actually billed; `calls_with_usage` is
-        # what we could measure. Reporting only the second one understated
-        # the first Claude day's spend by 34 calls.
-        unattributed = max(0, segments_to_model - rows_with_usage)
-        stats.update(model_calls=segments_to_model,
-                     calls_with_usage=rows_with_usage,
-                     calls_without_usage=unattributed,
+        # Every figure here is measured over model_calls, which holds one
+        # row per metered call whether or not it produced an observation.
+        # Summing them from observation rows understated the first full
+        # Claude day by 34 of 1225 calls.
+        stats.update(model_calls=spend.calls,
+                     calls_without_observation=int(call_totals[3] or 0),
                      input_tokens=spend.input_tokens,
                      output_tokens=spend.output_tokens,
                      estimated_usd=round(spend.usd, 4) if spend.usd is not None else None)
         print(spend.render())
-        if unattributed:
-            per_call = ((spend.usd or 0.0) / rows_with_usage
-                        if rows_with_usage else 0.0)
-            print(f"[cip] {unattributed} of {segments_to_model} calls returned "
-                  f"no observation and carry no usage; measured spend is a "
-                  f"LOWER BOUND. At the measured mean they add about "
-                  f"${per_call * unattributed:.2f}.")
+        # The router's count and the extractor's must agree. They are
+        # produced by two independent passes, so a mismatch means one of
+        # them is wrong and the spend figure cannot be trusted.
+        if spend.calls != segments_to_model:
+            print(f"[cip] WARNING: {segments_to_model} segments were routed to "
+                  f"the model but {spend.calls} calls were recorded.")
     _write_metrics(spark, stats=stats, config=config)
     audit.write("spark_run_finished", **stats)
     stats["audit_rows"] = audit_sink.flush(

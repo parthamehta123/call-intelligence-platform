@@ -29,14 +29,16 @@ from typing import Iterator
 
 import pandas as pd
 
-from ..pipeline.extract import extract
+from ..config import CONFIG
+from ..pipeline.extract import LEDGER, extract
 from ..pipeline.preprocess import segment_call
 from ..pipeline.route import for_extraction, route
 from ..schemas import CallRecord, Segment
-from .schemas import OBSERVATION, ROUTE_DECISION, SEGMENT
+from .schemas import EXTRACTION, OBSERVATION, ROUTE_DECISION, SEGMENT
 
 SEGMENT_COLUMNS = [f.name for f in SEGMENT.fields]
 OBSERVATION_COLUMNS = [f.name for f in OBSERVATION.fields]
+EXTRACTION_COLUMNS = [f.name for f in EXTRACTION.fields]
 ROUTE_DECISION_COLUMNS = [f.name for f in ROUTE_DECISION.fields]
 
 
@@ -67,10 +69,28 @@ def _num(value, default: float) -> float:
     return default if value is None else float(value)
 
 
-def _frame(records: list[dict], columns: list[str]) -> pd.DataFrame:
-    # An empty partition still has to yield a correctly-shaped frame, or
-    # Spark fails the whole stage on schema mismatch rather than the task.
-    return pd.DataFrame(records, columns=columns) if records else pd.DataFrame(columns=columns)
+def _frame(records: list[dict], schema) -> pd.DataFrame:
+    """Records -> a frame Arrow will accept against `schema`.
+
+    Takes the schema, not a column list, because the column *types* are the
+    part that goes wrong. A record missing a key becomes NaN, which is a
+    float: in a StringType column Arrow rejects it, and in an IntegerType
+    column the whole column silently becomes float64. Both fail only at
+    serialisation, on the cluster, minutes into a run -- pandas holds them
+    without complaint, so nothing local notices.
+
+    Usage-only rows leave every observation column unset, so this is the
+    ordinary case rather than an edge one. Each column is built as `object`
+    holding native Python values or None, and Spark applies the declared
+    types on conversion.
+    """
+    columns = [f.name for f in schema.fields]
+    if not records:
+        return pd.DataFrame(columns=columns)
+    return pd.DataFrame(
+        {c: pd.Series([r.get(c) for r in records], dtype=object)
+         for c in columns},
+        columns=columns)
 
 
 def _segment_row(segment: Segment) -> dict:
@@ -130,7 +150,7 @@ def preprocess_batches(batches: Iterator[pd.DataFrame]) -> Iterator[pd.DataFrame
                 turns=[dict(t) for t in (turns if turns is not None else [])],
             )
             records += [_segment_row(s) for s in segment_call(call)]
-        yield _frame(records, SEGMENT_COLUMNS)
+        yield _frame(records, SEGMENT)
 
 
 def make_route_and_extract(*, extractor: str, extract_limit: int = 0,
@@ -180,8 +200,29 @@ def route_and_extract_batches(batches: Iterator[pd.DataFrame]) -> Iterator[pd.Da
         # `for_extraction` drops the security-only segments the router
         # forwards for inspection. Without it the executor would pay a
         # model to read every injection payload in the partition.
-        records = [asdict(o) for o in extract(for_extraction(route(segments)))]
-        yield _frame(records, OBSERVATION_COLUMNS)
+        observations = list(extract(for_extraction(route(segments))))
+        records = [dict(asdict(o), produced_observation=True) for o in observations]
+
+        # Every metered call, including the ones that returned nothing.
+        # Drained only after the generator above is fully consumed, so it
+        # holds exactly this batch's calls. With the rules extractor it is
+        # empty and this adds no rows at all.
+        seen = {o.segment_id for o in observations}
+        for call in LEDGER.drain():
+            if call.segment_id in seen:
+                continue
+            # A usage-only row: every observation column stays null, which
+            # is why the stage emits EXTRACTION rather than OBSERVATION.
+            # The driver projects observations out of the non-null rows.
+            records.append({
+                "segment_id": call.segment_id,
+                "extractor": CONFIG.claude_model,
+                "input_tokens": call.input_tokens,
+                "output_tokens": call.output_tokens,
+                "cache_read_input_tokens": call.cache_read_input_tokens,
+                "produced_observation": False,
+            })
+        yield _frame(records, EXTRACTION)
 
 
 def score_relevance_batches(batches: Iterator[pd.DataFrame]) -> Iterator[pd.DataFrame]:
@@ -189,7 +230,7 @@ def score_relevance_batches(batches: Iterator[pd.DataFrame]) -> Iterator[pd.Data
     extraction, e.g. tuning the threshold against a labelled sample."""
     for batch in batches:
         records = [_segment_row(s) for s in route(_segments_from(batch))]
-        yield _frame(records, SEGMENT_COLUMNS)
+        yield _frame(records, SEGMENT)
 
 
 def route_decisions_batches(batches: Iterator[pd.DataFrame]) -> Iterator[pd.DataFrame]:
@@ -225,4 +266,4 @@ def route_decisions_batches(batches: Iterator[pd.DataFrame]) -> Iterator[pd.Data
                 "relevance": float(segment.relevance),
                 "reached_extraction": segment.route_reason != "injection",
             })
-        yield _frame(rows, ROUTE_DECISION_COLUMNS)
+        yield _frame(rows, ROUTE_DECISION)

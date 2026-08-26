@@ -101,6 +101,27 @@ OBSERVATION = StructType([
     StructField("output_tokens", IntegerType(), True),
 ])
 
+# One row per metered call, which is NOT the same as one row per
+# observation. A call that returns no signal produces no Observation, and
+# tokens ride on Observations -- so summing spend from them undercounted
+# the first full Claude day by 34 of 1225 calls, and would report $0 for a
+# run that abstained on everything.
+#
+# `mapInPandas` yields exactly one schema, so the extraction stage cannot
+# emit observations and usage separately. It emits THIS instead: every
+# observation column, nullable, plus the call's usage. The driver projects
+# `observations` out of the rows where `observation_id` is present, and
+# `model_calls` out of all of them.
+EXTRACTION = StructType(
+    [StructField(f.name, f.dataType, True) for f in OBSERVATION.fields]
+    + [
+        StructField("cache_read_input_tokens", IntegerType(), True),
+        # False for a call that produced nothing. The count of these is the
+        # abstention rate, which used to be invisible.
+        StructField("produced_observation", BooleanType(), True),
+    ])
+
+
 # Stage metrics emitted per partition, unioned and summed on the driver.
 # Accumulators would be cheaper but are unreliable under speculative
 # execution and task retries -- a retried task double-counts. A tiny

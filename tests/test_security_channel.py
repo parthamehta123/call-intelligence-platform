@@ -65,7 +65,7 @@ def test_clean_segments_carry_no_signature():
     assert (rows["injection_signatures"] == "").all()
     # The product claim is routed to the model; the greeting is dropped and
     # never appears, so every emitted row here is extraction-bound.
-    assert rows["reached_extraction"].all()
+    assert all(rows["reached_extraction"])
 
 
 def test_the_call_count_comes_from_reached_extraction():
@@ -78,8 +78,9 @@ def test_the_call_count_comes_from_reached_extraction():
                    EXFIL,
                    "customer: Hi, how are you doing today?")
     rows = pd.concat(list(route_decisions_batches(iter([batch]))))
-    assert rows["reached_extraction"].sum() == 1, "only the real claim is billed"
-    assert (~rows["reached_extraction"]).sum() == 1, "the payload is inspected only"
+    reached = list(rows["reached_extraction"])
+    assert reached.count(True) == 1, "only the real claim is billed"
+    assert reached.count(False) == 1, "the payload is inspected only"
 
 
 def test_an_attack_riding_a_real_claim_is_marked_as_extracted():
@@ -199,3 +200,69 @@ def test_no_call_site_feeds_route_output_straight_to_extract():
     assert not offenders, (
         "extract() fed directly from route(); wrap it in for_extraction() so "
         f"security-only segments never reach a model: {offenders}")
+
+
+# --- a call that produced nothing must still reach the driver --------------
+#
+# Tokens ride on observation rows, so a call returning no signal carried its
+# usage nowhere and cost $0 in the report. The stage now emits one row per
+# metered CALL in the wider EXTRACTION schema, with the observation columns
+# null for a call that produced none, and the driver projects `observations`
+# and `model_calls` out of it.
+
+def test_a_call_with_no_observation_becomes_a_usage_only_row():
+    from cip.pipeline.extract import LEDGER, ModelCall
+    from cip.spark.stages import route_and_extract_batches
+
+    LEDGER.drain()
+    # A call that was billed and returned nothing. Seeded directly because
+    # the rules extractor makes no metered calls at all.
+    LEDGER.record(ModelCall(segment_id="ABSTAINED", input_tokens=900,
+                            output_tokens=12, produced_observation=False))
+
+    batch = _batch("customer: The X100 reboots on its own at night after 7.2.")
+    rows = pd.concat(list(route_and_extract_batches(iter([batch])))).to_dict("records")
+
+    usage_only = [r for r in rows if r["segment_id"] == "ABSTAINED"]
+    assert len(usage_only) == 1, "the billed call must appear"
+    row = usage_only[0]
+    assert row["observation_id"] is None, "it produced no observation"
+    assert row["produced_observation"] is False
+    assert row["input_tokens"] == 900 and row["output_tokens"] == 12
+
+    # ...and the real observation is still there, marked as having produced one.
+    real = [r for r in rows if r["segment_id"] != "ABSTAINED"]
+    assert len(real) == 1
+    assert real[0]["observation_id"] is not None
+    assert real[0]["produced_observation"] is True
+
+
+def test_the_rules_extractor_emits_no_metered_calls():
+    """No ledger entries, so nothing is counted as spend."""
+    from cip.pipeline.extract import LEDGER
+    from cip.spark.stages import route_and_extract_batches
+
+    LEDGER.drain()
+    batch = _batch("customer: The X100 reboots on its own at night after 7.2.")
+    rows = pd.concat(list(route_and_extract_batches(iter([batch])))).to_dict("records")
+    assert all(r["produced_observation"] for r in rows)
+    assert not any(r["input_tokens"] for r in rows)
+
+
+def test_extraction_rows_match_the_declared_schema():
+    """Including the usage-only rows, whose observation columns are null.
+
+    A missing dict key becomes NaN, and a float in a StringType column is
+    rejected by Arrow only on the cluster. This is the same failure that
+    `injection_signatures` caused as a list in a string column.
+    """
+    from cip.pipeline.extract import LEDGER, ModelCall
+    from cip.spark.schemas import EXTRACTION
+    from cip.spark.stages import route_and_extract_batches
+
+    LEDGER.drain()
+    LEDGER.record(ModelCall(segment_id="ABSTAINED", input_tokens=900,
+                            output_tokens=12, produced_observation=False))
+    batch = _batch("customer: The X100 reboots on its own at night after 7.2.")
+    for frame in route_and_extract_batches(iter([batch])):
+        _assert_conforms(frame, EXTRACTION)

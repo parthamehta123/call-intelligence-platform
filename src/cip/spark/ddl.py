@@ -77,6 +77,23 @@ DDL = {
         ) USING {fmt}
         PARTITIONED BY (day)
     """,
+    # One row per metered model call, whether or not it produced an
+    # observation. Spend is summed from here rather than from `observations`
+    # because tokens ride on observation rows, so a call that returned no
+    # signal cost $0 in the report -- 34 of 1225 on the first Claude day.
+    "model_calls": """
+        CREATE TABLE IF NOT EXISTS {t} (
+            segment_id STRING,
+            extractor STRING,
+            input_tokens INT,
+            output_tokens INT,
+            cache_read_input_tokens INT,
+            produced_observation BOOLEAN,
+            run_id STRING,
+            day STRING
+        ) USING {fmt}
+        PARTITIONED BY (day)
+    """,
     # Every routing decision, one row per kept segment. Separate from
     # `segments` because it answers a different question -- not "what did we
     # process" but "what did the router decide, and why" -- and because it
