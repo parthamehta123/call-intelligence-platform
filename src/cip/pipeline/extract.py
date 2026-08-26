@@ -20,6 +20,8 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import threading
+from dataclasses import dataclass
 from typing import Iterable, Iterator
 
 from ..catalog import resolve_product, resolve_version
@@ -154,6 +156,68 @@ def _sentence_around(text: str, start: int, end: int) -> str:
     right = min((i for i in (text.find(c, end) for c in ".?!") if i != -1),
                 default=len(text))
     return text[left + 1:right + 1].strip()
+
+
+@dataclass
+class ModelCall:
+    """One metered call. Recorded whether or not an observation resulted.
+
+    Spend used to be summed from observation rows, so a call that returned
+    no signal left no trace and its tokens were never counted. On the first
+    full Claude day that hid 34 of 1225 calls -- a 3% undercount, and a
+    mechanism that would report $0 for a run that abstained on everything
+    while the bill arrived in full.
+    """
+
+    segment_id: str
+    input_tokens: int
+    output_tokens: int
+    cache_read_input_tokens: int = 0
+    produced_observation: bool = False
+
+
+class UsageLedger:
+    """Per-process record of metered calls.
+
+    Module-level because the extractor is called from a generator consumed
+    deep inside a Spark task, and threading a sink through every call site
+    is how the last three multi-call-site bugs happened. `drain` empties it,
+    so a caller always sees exactly the calls it caused.
+    """
+
+    def __init__(self) -> None:
+        self._calls: list[ModelCall] = []
+        self._lock = threading.Lock()
+
+    def record(self, call: ModelCall) -> None:
+        with self._lock:
+            self._calls.append(call)
+
+    def drain(self) -> list[ModelCall]:
+        with self._lock:
+            calls, self._calls = self._calls, []
+        return calls
+
+    def __len__(self) -> int:
+        return len(self._calls)
+
+
+LEDGER = UsageLedger()
+
+
+def totals(calls: list[ModelCall]) -> dict:
+    """Aggregate a drained ledger into the numbers a cost report needs."""
+    return {
+        "model_calls": len(calls),
+        "input_tokens": sum(c.input_tokens for c in calls),
+        "output_tokens": sum(c.output_tokens for c in calls),
+        "cache_read_input_tokens": sum(c.cache_read_input_tokens for c in calls),
+        # Calls that cost money and yielded nothing. Reported rather than
+        # dropped: a rising number here means the extractor is abstaining,
+        # which is a quality signal that used to be invisible.
+        "calls_without_observation": sum(1 for c in calls
+                                         if not c.produced_observation),
+    }
 
 
 def extract_rules(segment: Segment) -> Observation | None:
@@ -308,6 +372,13 @@ def extract_claude(segment: Segment, client=None) -> Observation | None:
     if observation is not None:
         observation.input_tokens = tokens["input_tokens"]
         observation.output_tokens = tokens["output_tokens"]
+
+    # Recorded for every call, including this one returning None. The row
+    # is the only carrier of usage downstream, so a call with no row is a
+    # call with no cost unless the ledger holds it.
+    LEDGER.record(ModelCall(segment_id=segment.segment_id,
+                            produced_observation=observation is not None,
+                            **tokens))
     return observation
 
 

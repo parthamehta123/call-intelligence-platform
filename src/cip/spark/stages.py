@@ -33,11 +33,11 @@ from ..pipeline.extract import extract
 from ..pipeline.preprocess import segment_call
 from ..pipeline.route import for_extraction, route
 from ..schemas import CallRecord, Segment
-from .schemas import OBSERVATION, SECURITY_EVENT, SEGMENT
+from .schemas import OBSERVATION, ROUTE_DECISION, SEGMENT
 
 SEGMENT_COLUMNS = [f.name for f in SEGMENT.fields]
 OBSERVATION_COLUMNS = [f.name for f in OBSERVATION.fields]
-SECURITY_EVENT_COLUMNS = [f.name for f in SECURITY_EVENT.fields]
+ROUTE_DECISION_COLUMNS = [f.name for f in ROUTE_DECISION.fields]
 
 
 def _content_hash(text: str) -> str:
@@ -192,28 +192,30 @@ def score_relevance_batches(batches: Iterator[pd.DataFrame]) -> Iterator[pd.Data
         yield _frame(records, SEGMENT_COLUMNS)
 
 
-def scan_for_injections_batches(batches: Iterator[pd.DataFrame]) -> Iterator[pd.DataFrame]:
-    """The security channel, as its own pass over the segments.
+def route_decisions_batches(batches: Iterator[pd.DataFrame]) -> Iterator[pd.DataFrame]:
+    """Every routing decision, as its own pass over the segments.
 
-    `route_and_extract_batches` drops security-only segments so no model is
-    paid to read an attacker's text -- but `mapInPandas` yields exactly one
-    schema, so an injection that never becomes an `Observation` would leave
-    no cluster-side trace whatsoever. Locally the audit log catches those;
-    on Spark there is no driver-side log to write to from an executor.
+    `mapInPandas` yields exactly one schema, so the fused route+extract
+    stage can emit observations and nothing else. Two things that are not
+    observations still have to reach the driver:
 
-    So the scan runs again here and emits rows. It is pure CPU -- no model
-    call, no network -- which is what makes running the router twice
-    cheaper than threading a second output through the extraction stage.
+    * an **injection** forwarded for inspection, which never becomes an
+      Observation and would otherwise leave no cluster-side trace at all;
+    * the **number of segments sent to the model**, which is the call count.
+      Deriving it from observation rows undercounts by every call that
+      returned no signal -- 34 of 1225 on the first full Claude day, a 3%
+      understatement of spend that grows as the extractor abstains more.
 
-    Emits every segment carrying a signature, including those that also
-    carry a real claim: `reached_extraction` records which, so a reader can
-    tell an inspected-and-extracted segment from an inspected-only one.
+    Both fall out of one row per kept segment. The security channel is this
+    filtered to a non-empty signature; the call count is this filtered to
+    `reached_extraction`.
+
+    The pass is pure CPU -- no model call, no network -- which is what makes
+    re-running the router cheaper than widening the extraction output.
     """
     for batch in batches:
         rows = []
         for segment in route(_segments_from(batch)):
-            if not segment.injection_signatures:
-                continue
             rows.append({
                 "segment_id": segment.segment_id, "call_id": segment.call_id,
                 "customer_id": segment.customer_id,
@@ -223,4 +225,4 @@ def scan_for_injections_batches(batches: Iterator[pd.DataFrame]) -> Iterator[pd.
                 "relevance": float(segment.relevance),
                 "reached_extraction": segment.route_reason != "injection",
             })
-        yield _frame(rows, SECURITY_EVENT_COLUMNS)
+        yield _frame(rows, ROUTE_DECISION_COLUMNS)

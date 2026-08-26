@@ -34,10 +34,10 @@ from ..security.audit import audit
 from . import audit_sink, ddl, publish
 from .aggregate import aggregate_observations
 from .dedupe import dedupe_across_days, dedupe_within_day, record_seen
-from .schemas import CALL, OBSERVATION, SECURITY_EVENT, SEGMENT
+from .schemas import CALL, OBSERVATION, ROUTE_DECISION, SEGMENT
 from .session import get_spark
 from .stages import (make_route_and_extract, preprocess_batches,
-                     scan_for_injections_batches)
+                     route_decisions_batches)
 
 
 def _run_id(day: str) -> str:
@@ -116,22 +116,26 @@ def run(day: str, *, raw_path: str | None = None, config=SPARK, spark=None,
             f"for an earlier day, or a preprocessing failure. Refusing to "
             f"report success on an empty run.")
 
-    # --- security channel --------------------------------------------------
+    # --- routing decisions ---------------------------------------------------
     # Runs before extraction and over the *uncapped* segments, deliberately.
     # `extract_limit` is a spend cap on model calls; letting it also bound
-    # the injection scan would mean a cheap capped run silently inspected
-    # less of the day than a full one, which is the wrong thing to make
-    # cheaper. This stage calls no model.
-    security_table = _table("security_events", config=config)
-    scanned = silver.select(*[f.name for f in SEGMENT.fields]).mapInPandas(
-        scan_for_injections_batches, schema=SECURITY_EVENT)
+    # this pass would mean a cheap capped run inspected less of the day than
+    # a full one, which is the wrong thing to make cheaper. It calls no model.
+    decisions_table = _table("route_decisions", config=config)
+    decisions = silver.select(*[f.name for f in SEGMENT.fields]).mapInPandas(
+        route_decisions_batches, schema=ROUTE_DECISION)
     publish.write_day_partition(
-        scanned.withColumn("run_id", F.lit(run_id)).withColumn("day", F.lit(day)),
-        table=security_table, day=day, config=config)
-    security_events = spark.table(security_table).filter(F.col("day") == day)
-    injection_count = security_events.count()
-    inspection_only = security_events.filter(
-        ~F.col("reached_extraction")).count()
+        decisions.withColumn("run_id", F.lit(run_id)).withColumn("day", F.lit(day)),
+        table=decisions_table, day=day, config=config)
+    route_decisions = spark.table(decisions_table).filter(F.col("day") == day)
+
+    injections = route_decisions.filter(F.col("injection_signatures") != "")
+    injection_count = injections.count()
+    inspection_only = injections.filter(~F.col("reached_extraction")).count()
+    # The exact number of segments handed to the extractor, and therefore
+    # the exact number of metered calls. Read from here rather than counted
+    # from observation rows, which miss every call that returned no signal.
+    segments_to_model = route_decisions.filter(F.col("reached_extraction")).count()
     print(f"[cip] injections detected {injection_count} "
           f"({inspection_only} forwarded for inspection only)")
 
@@ -184,6 +188,11 @@ def run(day: str, *, raw_path: str | None = None, config=SPARK, spark=None,
 
     # Summed from the rows the workers wrote, which is the only place a
     # per-call figure from an executor survives.
+    # Tokens are only ever carried on observation rows, so a call that
+    # returned no signal contributes none. `rows_with_usage` is therefore
+    # the count of *attributed* calls, not the count of calls made --
+    # `segments_to_model` above is that. The difference is reported rather
+    # than hidden, and the spend below is explicitly a lower bound.
     token_totals = observations.agg(
         F.coalesce(F.sum("input_tokens"), F.lit(0)),
         F.coalesce(F.sum("output_tokens"), F.lit(0)),
@@ -222,14 +231,28 @@ def run(day: str, *, raw_path: str | None = None, config=SPARK, spark=None,
 
     from ..pricing import estimate
 
-    spend = estimate(CONFIG.claude_model, int(token_totals[2] or 0),
+    rows_with_usage = int(token_totals[2] or 0)
+    spend = estimate(CONFIG.claude_model, rows_with_usage,
                      int(token_totals[0] or 0), int(token_totals[1] or 0))
     if spend.calls:
-        stats.update(model_calls=spend.calls,
+        # `model_calls` is what was actually billed; `calls_with_usage` is
+        # what we could measure. Reporting only the second one understated
+        # the first Claude day's spend by 34 calls.
+        unattributed = max(0, segments_to_model - rows_with_usage)
+        stats.update(model_calls=segments_to_model,
+                     calls_with_usage=rows_with_usage,
+                     calls_without_usage=unattributed,
                      input_tokens=spend.input_tokens,
                      output_tokens=spend.output_tokens,
                      estimated_usd=round(spend.usd, 4) if spend.usd is not None else None)
         print(spend.render())
+        if unattributed:
+            per_call = ((spend.usd or 0.0) / rows_with_usage
+                        if rows_with_usage else 0.0)
+            print(f"[cip] {unattributed} of {segments_to_model} calls returned "
+                  f"no observation and carry no usage; measured spend is a "
+                  f"LOWER BOUND. At the measured mean they add about "
+                  f"${per_call * unattributed:.2f}.")
     _write_metrics(spark, stats=stats, config=config)
     audit.write("spark_run_finished", **stats)
     stats["audit_rows"] = audit_sink.flush(

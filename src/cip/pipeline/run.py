@@ -27,7 +27,7 @@ from ..security.audit import audit
 from ..security.declassify import DeclassificationRefused, declassify_candidate
 from ..security.policy import PolicyViolation
 from .aggregate import aggregate
-from .extract import extract
+from .extract import LEDGER, extract, totals
 from .ingest import list_partitions, manifest, read_partition
 from .preprocess import preprocess
 from .reconcile import reconcile
@@ -66,6 +66,11 @@ def process_partition(path: Path) -> tuple[list[Observation], dict]:
 
     observations = list(extract(to_model))
     stats["observations"] = len(observations)
+
+    # Drained after the generator is fully consumed. Counting model calls
+    # from observation rows undercounts by exactly the calls that returned
+    # no signal -- 34 of 1225 on the first full Claude day.
+    stats.update(totals(LEDGER.drain()))
     return observations, dict(stats)
 
 

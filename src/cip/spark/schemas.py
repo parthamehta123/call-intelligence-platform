@@ -57,11 +57,16 @@ SEGMENT = StructType([
     StructField("injection_signatures", StringType(), True),
 ])
 
-# The security channel. Written by a stage of its own because the fused
-# route+extract stage can only yield one schema, and an injection that
-# never becomes an Observation would otherwise leave no cluster-side trace
-# at all -- the same silent drop the router override exists to fix.
-SECURITY_EVENT = StructType([
+# Every routing decision, one row per kept segment. Written by a stage of
+# its own because the fused route+extract stage can only yield one schema,
+# so an injection that never becomes an Observation -- and a metered call
+# that returns no signal -- would otherwise leave no cluster-side trace.
+#
+# Two consumers, one pass: the security channel is this filtered to rows
+# with a signature, and the exact model-call count is this filtered to
+# `reached_extraction`. Deriving the call count from observation rows
+# undercounted it by every call that produced nothing.
+ROUTE_DECISION = StructType([
     StructField("segment_id", StringType(), False),
     StructField("call_id", StringType(), False),
     StructField("customer_id", StringType(), False),

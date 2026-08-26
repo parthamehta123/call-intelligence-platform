@@ -216,9 +216,11 @@ is the only place they become evidence, since no later stage runs on them.
 On Spark there is no driver-side audit log an executor can write to, and
 `mapInPandas` yields one schema — so the same segments would have been
 dropped silently on the cluster while the local run looked correct. A
-`scan_for_injections_batches` stage writes them to a `security_events`
-table instead, uncapped by `extract_limit`, with `reached_extraction`
-distinguishing inspected-only from inspected-and-extracted.
+`route_decisions_batches` stage writes one row per kept segment to a
+`route_decisions` table instead, uncapped by `extract_limit`, with
+`reached_extraction` distinguishing inspected-only from
+inspected-and-extracted. The security channel is that table filtered to a
+non-empty signature.
 
 ### What this does not fix
 

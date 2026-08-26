@@ -18,11 +18,11 @@ Here is the honest per-stage account, now that the port exists and runs.
 | 2 · preprocess (redact, segment) | `mapInPandas(preprocess_batches)` — same function body | **yes** |
 | 3 · route (funnel) | fused into the extract pass | **yes** |
 | 4 · extract | `mapInPandas(route_and_extract_batches)` — same `cip.pipeline.extract` | **yes** |
-| security channel | `mapInPandas(scan_for_injections_batches)` → `security_events` | **yes** |
+| routing decisions | `mapInPandas(route_decisions_batches)` → `route_decisions` | **yes** |
 
 **Verified on dev**, run `Ra492dd2f21`: `injections_detected 57`,
 `injections_inspection_only 14`, `observations 1195` — identical to the
-local run. `security_events` holds 43 rows with `route_reason=both`
+local run. `route_decisions` holds 43 rows with `route_reason=both`
 (inspected and extracted) and 14 with `route_reason=injection`
 (inspected only), and the two new `segments` columns evolved additively.
 
@@ -35,8 +35,16 @@ place, and `tests/test_security_channel.py` checks emitted rows against
 the declared Spark types so the next such mismatch fails locally in half a
 second instead.
 
-The security channel is a second pass rather than an extra output of the
-extract stage, because `mapInPandas` yields exactly one schema. Locally an
+`route_decisions` is a second pass rather than an extra output of the
+extract stage, because `mapInPandas` yields exactly one schema. It records
+one row per kept segment, and two consumers filter it: the security
+channel is the rows with a non-empty signature, and the **exact metered
+call count** is the rows with `reached_extraction`.
+
+That second consumer exists because spend used to be summed from
+observation rows, so a call returning no signal cost $0 in the report. On
+the first full Claude day it hid 34 of 1225 calls. Measured on the
+cluster: `kept 1239, to_model 1225, injections 57`. Locally an
 injection the router forwards for inspection is recorded in the audit log;
 an executor has no such log, so without this stage the cluster would drop
 those segments silently — the identical failure the router override exists
@@ -158,7 +166,7 @@ nine, and it fails on the first one it cannot reach.
 | `policy_audit` | `SELECT, MODIFY` | decision log |
 | `segments` | `SELECT, MODIFY` | silver, and replay without re-reading raw |
 | `observations` | `SELECT, MODIFY` | materialised extraction output |
-| `security_events` | `SELECT, MODIFY` | the injection channel |
+| `route_decisions` | `SELECT, MODIFY` | injection channel + call count |
 | `seen_segments` | `SELECT, MODIFY` | global dedupe |
 | `run_metrics` | `SELECT, MODIFY` | run history |
 | the raw volume | `READ VOLUME` | never write |
@@ -309,7 +317,7 @@ security_checks: 10/10 blocked
 
 Identical to dev on every figure. Read back from the `cip` tables rather
 than taken from the run summary: `evidence` 1195, `observations` 1195,
-`issues` 6, `review_queue` 2, and `security_events` 57 — 43 `both`, 14
+`issues` 6, `review_queue` 2, and 57 injections in `route_decisions` — 43 `both`, 14
 `injection`.
 
 Two things to know about that run. `prod` takes `day: ""`, meaning

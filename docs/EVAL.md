@@ -199,6 +199,38 @@ the hard cases 0.45 collapses recall from 0.917 to 0.750. **The circular
 set would have told us to raise the threshold and the realistic set says
 don't** — which is the entire argument for keeping both.
 
+## What the first full Claude day cost, and what the cost report got wrong
+
+1,225 segments, 14.8 minutes, **$12.87** measured — 1.60M input tokens and
+194k output at claude-opus-5 rates. Observations came in at **1,191**
+against the rules extractor's **1,195**, and injections were identical at
+57 detected / 14 inspection-only.
+
+That 0.3% gap between a regex extractor and Claude Opus on a 4,000-segment
+day is the useful result: every figure in these docs was measured on the
+rules path, and they survive a real model. Claude did raise candidates
+8 → 13 and the review queue 2 → 6, correctly routing the extra, weaker
+issues to humans rather than auto-publishing them.
+
+**The cost report was wrong, and quietly.** `model_calls` was
+`sum(input_tokens > 0)` over observation *rows*, but tokens ride on rows,
+and a call that returns no signal produces none. 1,225 calls were billed;
+1,191 were counted. A 3% undercount here, and a mechanism that reports $0
+for a run that abstains on everything while the bill arrives in full.
+
+Two fixes, because the local and Spark paths have different constraints:
+
+* **Locally**, a `UsageLedger` records every call as it is made, whether or
+  not an observation results, and `run.py` drains it. Exact.
+* **On Spark**, the executor cannot reach the driver, so the call count
+  comes from `route_decisions` filtered to `reached_extraction` — the exact
+  number of segments handed to the extractor. Tokens still ride on rows, so
+  measured spend is reported as a **lower bound** with `calls_without_usage`
+  named alongside it, plus a projection at the measured mean.
+
+The honest summary: `model_calls` is now exact everywhere, and token totals
+are exact locally and a labelled lower bound on Spark.
+
 ## Known weaknesses this surfaces
 
 * **Paraphrase — still the one miss, and deliberately not fixed.**
