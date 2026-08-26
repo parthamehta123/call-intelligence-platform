@@ -36,17 +36,32 @@ make spark-run   # the same pipeline as a local Spark job
 
 ```
 calls                4,000
-segments             3,999
-segments to LLM      1,166      71% discarded before any inference
-PII redactions         304      removed before persistence
-observations         1,138
-issue candidates        12      1,138 observations collapse to 12 facts
+segments             3,996
+segments to LLM      1,225      69% discarded before any inference
+injections detected     57      14 forwarded for inspection only, never extracted
+PII redactions         286      removed before persistence
+observations         1,195
+issue candidates         8      1,195 observations collapse to 8 facts
 published                6
 queued for review        2      contradictions + spec corrections
-rejected                 4      includes injection-bearing segments
 docs re-embedded        10      CDC, not a full re-index
 red team            10 / 10     blocked by deterministic policy
 ```
+
+The same day through **Claude Opus** rather than the rules extractor:
+
+```
+model calls          1,223      1,188 produced an observation, 35 abstained
+tokens               1.65M in / 201k out
+cost                $13.26
+observations         1,188      vs 1,195 from the rules extractor -- 0.6% apart
+injections              57      identical
+```
+
+Two entirely different extractors — one lexical, one a frontier model —
+landing within 0.6% on a 4,000-segment day, with identical injection
+counts. Every figure in these docs was measured on the rules path; they
+hold under a real model.
 
 The two items routed to a human are the interesting ones:
 
@@ -57,15 +72,22 @@ X100/SFP_PORT_COUNT   spec corrections always require human sign-off
 
 ## Verified on Databricks
 
-The same pipeline runs as a 4-task job on **Databricks serverless** against
-Unity Catalog — `setup → seed_demo_data → daily_pipeline →
-security_checks` — and produces numbers identical to the local run:
+The same pipeline runs on **Databricks serverless** against Unity Catalog
+and produces numbers identical to the local run:
 
 ```
-calls 4000 · segments_landed 3997 · observations 1138 · evidence_rows 1138
-candidates 12 · published 6 · queued_for_review 2 · rejected 4
-audit_rows 22 · security_checks 10/10 blocked
+calls 4000 · segments_landed 3996 · observations 1195 · evidence_rows 1195
+injections_detected 57 · injections_inspection_only 14
+candidates 8 · published 6 · queued_for_review 2
+audit_rows 18 · security_checks 10/10 blocked
 ```
+
+**Both targets are verified end to end.** `prod` runs as a service
+principal on least-privilege grants — no `CREATE TABLE`, no
+`CREATE CATALOG`, tables created out of band by an admin — against its own
+catalog, and reproduces the same figures on its own day of calls. A replay
+of an already-published day produced byte-identical output, which is the
+idempotency the day-partitioned writes exist to provide.
 
 `security_checks` is a job task, not a notebook someone remembers to open:
 if any attack executes, the run fails.
@@ -233,18 +255,25 @@ partition) and `aggregate` (a whole-day `dict` is a driver-side collect).
 `tests/test_spark.py` pins the two aggregation implementations together so
 they cannot drift.
 
-Verified locally on Spark 3.5.0 over the synthetic day: the Spark job
-publishes **exactly** the state the single-node runner does, and running
-the same day twice leaves every table unchanged.
+Verified on Databricks serverless over the synthetic day: the Spark job
+publishes **exactly** the state the single-node runner does, and replaying
+an already-published day leaves every table unchanged.
 
 ```
-                    RUN 1        RUN 2       tables after both
+                    RUN 1        REPLAY      tables after both
 segments            4,000        4,000
-after dedupe        3,997        3,997
-observations        1,138        1,138       evidence      1,138
+after dedupe        3,996        3,996
+observations        1,195        1,195       evidence      1,195
 published               6            6       issues            6
 queued for review       2            2       review_queue      2
 ```
+
+The replay is not a rerun of a fresh day — it reprocesses a day already
+published, which exercises `replaceWhere` day-partition writes and a
+global dedupe that has already seen every content hash. Copying one day's
+calls under a second date, by contrast, correctly produces **zero**
+segments and the job refuses to publish an empty knowledge base rather
+than reporting a quiet day.
 
 `mapInPandas`, not `mapPartitions`: the RDD API does not exist on Spark
 Connect, which is what `databricks-connect` 13+ and serverless speak.
@@ -337,20 +366,83 @@ model as `DENIED BY POLICY: …` rather than silently disappearing. For the
 nightly sweep, `extract_claude_batch()` submits one Batch job at 50% cost
 and keys results by `custom_id`.
 
+On Databricks the extractor is a **deploy-time** variable, not a runtime
+one — Asset Bundle variables resolve when the bundle is deployed, so
+setting it at run time silently runs the wrong backend:
+
+```bash
+databricks bundle deploy -t dev --var="extractor=claude" \
+                                --var="extract_limit=50"   # cap a first paid run
+make bundle-run TARGET=dev
+```
+
+`extract_limit` is a global cap applied before the work fans out, because
+a per-partition cap of 50 across 200 partitions is 10,000 model calls, not
+50. Spend is summed from `model_calls` — one row per metered call, whether
+or not it produced an observation — and cross-checked against the count of
+segments the router sent. The two are produced by independent passes, and
+a mismatch is printed rather than reconciled silently.
+
+---
+
+## Three bugs that reported success
+
+Each of these produced a green run, plausible numbers, and a passing test
+suite. They are the reason this repo distrusts its own output.
+
+**The router decided what the security layer could see.** Every security
+layer runs downstream of the relevance funnel, and the funnel is scored on
+cost — so an attack that mentioned no product scored 0.0 and was dropped
+before taint tracking, risk scoring or audit ever ran. 14 of 57 injections
+vanished that way, including an exfiltration attempt. The detector now has
+its own path to the keep decision, and forwarded attacks go to inspection
+**without** reaching a model. 57/57, with the funnel's cost unchanged.
+
+**An eval measured its own labels, not the router.** The generated set
+marked a segment positive if the injected sentence appeared anywhere in
+it, ignoring *who said it* — so the generator's own diarization errors
+were labelled as customer speech and the router was charged with a miss
+for correctly dropping them. Reported recall of 0.9860 was a ceiling
+imposed by the label. Speaker-aware, it is 1.0000 with zero misses.
+
+**A billed Spark stage was evaluated twice.** Deriving two tables from one
+lazy `mapInPandas` re-ran it per write — extracting the day twice and
+billing it twice, with the two tables describing different sets of calls.
+Confirmed against the provider's usage figures: 6,179,879 input tokens
+observed against 4,051,185 reported, a residual of 1.9% on both input and
+output once every pre-fix run is counted as doubled. A lazy DataFrame over
+a *billed, non-deterministic* UDF is a different object from one over a
+pure UDF, and Spark gives no indication which you are holding.
+
+All three were found by an arithmetic check that did not close, not by a
+failure. The cost report now reconciles against an independent count of
+segments routed, and disagreement is printed rather than reconciled away.
+
 ---
 
 ## Honest limits
 
 - The rules extractor is a deterministic stand-in so the demo runs offline;
-  the Claude backend in `pipeline/extract.py` is the real path.
-- The embedding is a hashed bag-of-words. Swap `embed()` for a real
-  encoder — nothing else in `retrieval.py` changes.
+  the Claude backend in `pipeline/extract.py` is the real path, and has run
+  a full day end to end.
+- The embedding is a hashed bag-of-words by default. Swap `embed()` for a
+  real encoder — nothing else in `retrieval.py` changes.
 - Injection signatures catch demonstration attacks. They are a *signal*
-  layer; capability narrowing and taint tracking do the containment.
-- The Spark port is verified on **local** Spark 3.5.0 and is idempotent
-  across reruns, but not at scale: no multi-node cluster, no 10 TB, no
-  Unity Catalog, and no Delta `MERGE` (local runs take the parquet
-  fallback). Those need a workspace.
-- The Asset Bundle parses but is not workspace-validated — the stored
-  Databricks token returns `403 Invalid access token`, so
-  `databricks auth login` is step one.
+  layer, and remain bypassable by obfuscation; capability narrowing and
+  taint tracking do the containment. The attack channel reports coverage of
+  the payloads it can recognise, and keeps reporting misses so it cannot
+  claim perfect coverage of the subset it can see.
+- **The generated eval set shares an author with the router**, so its near-
+  perfect scores show only that the router catches the patterns the
+  generator emits. The hand-written hard cases (0.917 recall / 0.786
+  precision) are the informative measure.
+- **No independent annotator has labelled the router set.** Both label sets
+  trace to one author; they are marked `advised` and inter-annotator kappa
+  is withheld rather than reported, because agreement between an author and
+  someone they briefed measures transcription. This is the largest open
+  gap, and it is a person's twenty minutes, not a code change.
+- Token totals are exact on both paths. The failure case — a call that
+  errors before returning — is unit-tested but has not fired against the
+  real API, since an error cannot be forced cheaply.
+- 4,000 synthetic calls is not 10 TB. The architecture is the claim; the
+  volume is not.
