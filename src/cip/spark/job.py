@@ -166,18 +166,25 @@ def run(day: str, *, raw_path: str | None = None, config=SPARK, spark=None,
         extract_effort=CONFIG.extract_effort)
     # The stage emits one row per metered CALL, not per observation: a call
     # that returns no signal produces no Observation and would otherwise
-    # carry its tokens nowhere. Both tables are projections of it.
-    extracted = (to_extract.mapInPandas(extract_fn, schema=EXTRACTION)
-                 .withColumn("run_id", F.lit(run_id))
-                 .withColumn("day", F.lit(day)))
-
+    # carry its tokens nowhere.
+    #
+    # MATERIALISED before either table is derived from it. `extracted` is a
+    # lazy DataFrame over a non-deterministic UDF -- it calls a model --
+    # so writing two tables from it evaluates the stage TWICE and bills the
+    # day twice, with the two tables disagreeing about the same segment.
+    # That is exactly what happened: one run produced a row saying a
+    # segment abstained and another saying it reported OVERHEATING, from
+    # two different calls. `.cache()` is rejected on serverless, so this is
+    # materialised the same way silver is.
     calls_table = _table("model_calls", config=config)
     publish.write_day_partition(
-        extracted.select("segment_id", "extractor", "input_tokens",
-                         "output_tokens", "cache_read_input_tokens",
-                         "produced_observation", "run_id", "day"),
+        to_extract.mapInPandas(extract_fn, schema=EXTRACTION)
+                  .withColumn("run_id", F.lit(run_id))
+                  .withColumn("day", F.lit(day)),
         table=calls_table, day=day, config=config)
 
+    # Read back, so every figure below comes from one set of model calls.
+    extracted = spark.table(calls_table).filter(F.col("day") == day)
     publish.write_day_partition(
         extracted.filter(F.col("observation_id").isNotNull())
                  .select(*OBSERVATION_COLUMNS_WITH_PARTITION),

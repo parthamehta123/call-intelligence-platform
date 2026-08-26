@@ -203,13 +203,21 @@ def route_and_extract_batches(batches: Iterator[pd.DataFrame]) -> Iterator[pd.Da
         observations = list(extract(for_extraction(route(segments))))
         records = [dict(asdict(o), produced_observation=True) for o in observations]
 
-        # Every metered call, including the ones that returned nothing.
-        # Drained only after the generator above is fully consumed, so it
-        # holds exactly this batch's calls. With the rules extractor it is
-        # empty and this adds no rows at all.
-        seen = {o.segment_id for o in observations}
+        # Every metered call that returned nothing. With the rules
+        # extractor the ledger is empty and this adds no rows at all.
+        #
+        # Filtered on the call's OWN flag, not on whether this batch
+        # produced an observation for that segment. The ledger is
+        # module-level, and an executor runs several tasks in one process,
+        # so a batch can drain a call belonging to a batch still running.
+        # Cross-referencing this batch's observations mislabelled those as
+        # abstentions -- 2 of 291 on a metered run, which overstated the
+        # abstention count while leaving spend correct. The call itself
+        # always knows whether it produced an observation.
         for call in LEDGER.drain():
-            if call.segment_id in seen:
+            if call.produced_observation:
+                # Its tokens ride on the observation row, wherever that row
+                # is emitted from.
                 continue
             # A usage-only row: every observation column stays null, which
             # is why the stage emits EXTRACTION rather than OBSERVATION.

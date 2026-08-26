@@ -266,3 +266,28 @@ def test_extraction_rows_match_the_declared_schema():
     batch = _batch("customer: The X100 reboots on its own at night after 7.2.")
     for frame in route_and_extract_batches(iter([batch])):
         _assert_conforms(frame, EXTRACTION)
+
+
+def test_a_call_drained_by_another_batch_is_not_mislabelled():
+    """The ledger is shared across tasks in one executor process.
+
+    Deciding "did this produce an observation?" by cross-referencing the
+    current batch's observations mislabelled calls belonging to a batch
+    still running -- 2 of 291 on a metered run appeared as abstentions
+    while also having an observation row. The call's own flag is the
+    authority, whichever batch happens to drain it.
+    """
+    from cip.pipeline.extract import LEDGER, ModelCall
+    from cip.spark.stages import route_and_extract_batches
+
+    LEDGER.drain()
+    # A call from a *different* batch that DID produce an observation.
+    LEDGER.record(ModelCall(segment_id="OTHER_BATCH", input_tokens=800,
+                            output_tokens=90, produced_observation=True))
+
+    batch = _batch("customer: The X100 reboots on its own at night after 7.2.")
+    rows = pd.concat(list(route_and_extract_batches(iter([batch])))).to_dict("records")
+
+    assert not [r for r in rows if r["segment_id"] == "OTHER_BATCH"], (
+        "a call that produced an observation must not be emitted as a "
+        "usage-only row just because this batch did not produce it")

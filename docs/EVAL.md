@@ -239,6 +239,28 @@ how many calls were made. A mismatch means one of them is wrong and the
 spend figure cannot be trusted, so it is printed as a warning rather than
 reconciled silently.
 
+### The stage must be materialised before it is read twice
+
+`extracted` is a lazy DataFrame over a UDF that calls a model. Deriving
+both tables from it wrote it twice, and Spark **re-evaluated the stage for
+each write** — extracting the day twice, billing it twice, and leaving the
+two tables describing different sets of calls. One segment appeared as an
+abstention in `model_calls` and as an `OVERHEATING` report in
+`observations`, from two different responses to the same prompt.
+
+It is now written to `model_calls` once and read back, so every figure
+comes from one set of calls. `.cache()` is rejected on serverless, which is
+the same reason silver is materialised rather than cached.
+
+Verified on a metered run (`R633dfba2fc`, 291 calls, $3.15):
+
+    model_calls   291 = 280 produced + 11 abstained
+    observations  280
+    contradictions  0
+
+The 11 abstaining calls carry real usage — 1374, 1366, 1315 input tokens —
+and none of it was counted before this change.
+
 ## Known weaknesses this surfaces
 
 * **Paraphrase — still the one miss, and deliberately not fixed.**
